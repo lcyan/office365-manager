@@ -749,14 +749,17 @@ def list_users() -> Any:
             privileged_admin_count = len(pra_assignments.get('value', [])) if pra_assignments else 0
         summary['global_admin_count'] = global_admin_count
         summary['privileged_admin_count'] = privileged_admin_count
-        # Retrieve total user count if possible
+        # Retrieve total user count if possible.  graph_request returns a
+        # string for /$count on success but a dict for HTTP 4xx/5xx error
+        # bodies (and None on auth/network failures), so guard on str before
+        # coercing.
         total_users: Optional[int] = None
         count_resp = graph_request(org, 'GET', '/users/$count', extra_headers={'ConsistencyLevel': 'eventual'})
-        try:
-            if count_resp is not None:
+        if isinstance(count_resp, str):
+            try:
                 total_users = int(count_resp)
-        except ValueError:
-            total_users = None
+            except ValueError:
+                total_users = None
         summary['total_users'] = total_users
         return render_template(
             'users.html',
@@ -898,7 +901,7 @@ def list_users() -> Any:
                     f"or startswith(givenName,'{safe_q}') or startswith(surname,'{safe_q}')"
                 )
             count_resp = graph_request(org, 'GET', '/users/$count', params=count_params, extra_headers={'ConsistencyLevel': 'eventual'})
-            if count_resp is not None:
+            if isinstance(count_resp, str):
                 total_count = int(count_resp)
                 total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
             else:
