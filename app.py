@@ -5,6 +5,7 @@ import secrets
 import string
 import hashlib
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -765,24 +766,29 @@ def list_users() -> Any:
         summary: Dict[str, Any] = {}
         licences: List[Dict[str, Any]] = []
         if api_resp and 'value' in api_resp:
-            # Attempt to fetch renewal and status information via the directory/subscriptions endpoint.
-            # This endpoint returns objects keyed by skuId with fields including status and nextLifecycleDateTime.
-            # Not all tenants or SKUs will have renewal information; if the call fails, we ignore it.
+            # These reads are independent after subscribedSkus has succeeded.
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                subs_future = executor.submit(graph_request, org, 'GET', '/directory/subscriptions')
+                ga_future = executor.submit(get_role_definition_id, org, 'Global Administrator')
+                pra_future = executor.submit(get_role_definition_id, org, 'Privileged Role Administrator')
+                count_future = executor.submit(
+                    graph_request, org, 'GET', '/users/$count',
+                    extra_headers={'ConsistencyLevel': 'eventual'}
+                )
+
+            # This endpoint returns objects keyed by skuId with fields including
+            # status and nextLifecycleDateTime.
             renewal_info: Dict[str, Dict[str, Any]] = {}
-            try:
-                subs_resp = graph_request(org, 'GET', '/directory/subscriptions')
-                # subs_resp may be a list of subscription objects
-                if is_graph_collection(subs_resp):
-                    for sub in subs_resp['value']:
-                        sku_id = sub.get('skuId')
-                        if sku_id:
-                            renewal_info[sku_id] = {
-                                'status': sub.get('status'),
-                                'renewal_date': sub.get('nextLifecycleDateTime')
-                            }
-                else:
-                    cache_complete = False
-            except Exception:
+            subs_resp = subs_future.result()
+            if is_graph_collection(subs_resp):
+                for sub in subs_resp['value']:
+                    sku_id = sub.get('skuId')
+                    if sku_id:
+                        renewal_info[sku_id] = {
+                            'status': sub.get('status'),
+                            'renewal_date': sub.get('nextLifecycleDateTime')
+                        }
+            else:
                 cache_complete = False
             for sku in api_resp['value']:
                 prepaid = sku.get('prepaidUnits', {})
@@ -813,14 +819,32 @@ def list_users() -> Any:
         # Count Global and Privileged administrators
         global_admin_count = None
         privileged_admin_count = None
-        ga_id = get_role_definition_id(org, 'Global Administrator')
-        pra_id = get_role_definition_id(org, 'Privileged Role Administrator')
+        ga_id = ga_future.result()
+        pra_id = pra_future.result()
         if ga_id:
-            ga_assignments = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"roleDefinitionId eq '{ga_id}'"})
+            ga_assignments = None
+            ga_filter = {'$filter': f"roleDefinitionId eq '{ga_id}'"}
+        else:
+            ga_filter = None
+        if pra_id:
+            pra_filter = {'$filter': f"roleDefinitionId eq '{pra_id}'"}
+        else:
+            pra_filter = None
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            ga_assignment_future = (
+                executor.submit(graph_request, org, 'GET', '/roleManagement/directory/roleAssignments', params=ga_filter)
+                if ga_filter else None
+            )
+            pra_assignment_future = (
+                executor.submit(graph_request, org, 'GET', '/roleManagement/directory/roleAssignments', params=pra_filter)
+                if pra_filter else None
+            )
+        if ga_assignment_future:
+            ga_assignments = ga_assignment_future.result()
             if is_graph_collection(ga_assignments):
                 global_admin_count = len(ga_assignments['value'])
-        if pra_id:
-            pra_assignments = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"roleDefinitionId eq '{pra_id}'"})
+        if pra_assignment_future:
+            pra_assignments = pra_assignment_future.result()
             if is_graph_collection(pra_assignments):
                 privileged_admin_count = len(pra_assignments['value'])
         summary['global_admin_count'] = global_admin_count
@@ -830,7 +854,7 @@ def list_users() -> Any:
         # bodies (and None on auth/network failures), so guard on str before
         # coercing.
         total_users: Optional[int] = None
-        count_resp = graph_request(org, 'GET', '/users/$count', extra_headers={'ConsistencyLevel': 'eventual'})
+        count_resp = count_future.result()
         if isinstance(count_resp, str):
             try:
                 total_users = int(count_resp)
@@ -1007,18 +1031,34 @@ def list_users() -> Any:
     global_admin_set: set = set()
     privileged_admin_set: set = set()
     roles_available = True
-    ga_id = get_role_definition_id(org, 'Global Administrator')
-    pra_id = get_role_definition_id(org, 'Privileged Role Administrator')
-    if ga_id:
-        ga_assignments = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"roleDefinitionId eq '{ga_id}'"})
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        ga_future = executor.submit(get_role_definition_id, org, 'Global Administrator')
+        pra_future = executor.submit(get_role_definition_id, org, 'Privileged Role Administrator')
+    ga_id = ga_future.result()
+    pra_id = pra_future.result()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        ga_assignment_future = (
+            executor.submit(
+                graph_request, org, 'GET', '/roleManagement/directory/roleAssignments',
+                params={'$filter': f"roleDefinitionId eq '{ga_id}'"}
+            ) if ga_id else None
+        )
+        pra_assignment_future = (
+            executor.submit(
+                graph_request, org, 'GET', '/roleManagement/directory/roleAssignments',
+                params={'$filter': f"roleDefinitionId eq '{pra_id}'"}
+            ) if pra_id else None
+        )
+    if ga_assignment_future:
+        ga_assignments = ga_assignment_future.result()
         if is_graph_collection(ga_assignments):
             global_admin_set = {a['principalId'] for a in ga_assignments['value']}
         else:
             roles_available = False
     else:
         roles_available = False
-    if pra_id:
-        pra_assignments = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"roleDefinitionId eq '{pra_id}'"})
+    if pra_assignment_future:
+        pra_assignments = pra_assignment_future.result()
         if is_graph_collection(pra_assignments):
             privileged_admin_set = {a['principalId'] for a in pra_assignments['value']}
         else:
