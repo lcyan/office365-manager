@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title if title else 'Office365 管理' }}</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
     <!-- 使用本地样式文件，避免外部 CDN 不可用 -->
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
