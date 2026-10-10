@@ -1,0 +1,9 @@
+*
+!Dockerfile
+!requirements.txt
+!app.py
+!sku_product_mapping.json
+!templates/
+!templates/**
+!static/
+!static/**

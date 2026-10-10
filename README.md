@@ -2,15 +2,27 @@
 
 这是一个基于 Flask 和 MSAL 的 Web 应用，用于集中管理多个 Microsoft 365/Office 365 租户中的用户、角色和订阅。界面支持中文，具备权限管理、角色分配、订阅管理、组织切换等功能。
 
-## ☁️ 快速启动：使用 DockerHub 镜像
+## ☁️ 使用自己 fork 仓库的 GHCR 镜像
 
-如果您不想自行构建镜像，可以直接使用预构建的镜像一键运行本项目。假设您的服务器已经安装了 Docker，执行以下命令即可：
+`.github/workflows/docker.yml` 使用 GitHub Actions 构建并发布到 **`ghcr.io/lcyan/office365-manager`**。工作流从当前 GitHub 仓库自动生成镜像地址，名称转小写，后续再次 fork 也能复用。镜像同时包含 **linux/amd64 和 linux/arm64**，Docker 自动选择主机架构。
 
-```bash
-docker run -d -p 5000:5000 --name office365-manager saitomikuya/office365-manager:latest
-```
+1. 在自己的 fork 中启用 Actions。工作流使用自带的 `GITHUB_TOKEN` 和 `packages: write` 权限，无需 Docker Hub 账号或额外发布 Token；组织策略也需要允许发布包。
+2. 推送默认分支后运行测试并发布 `latest` 和 `sha-<短提交号>`。推送 `v1.0.0` 等版本标签会发布 `1.0.0` 和 SHA 标签，不覆盖 `latest`。PR 运行测试和双架构构建，不登录或推送。Actions 手动运行时，只有选中默认分支才发布。
+3. 首次发布后检查仓库 Packages。匿名拉取需在包设置中将可见性设为 Public；私有包需在部署主机执行 `docker login ghcr.io`，使用有 `read:packages` 权限的凭证。复用已有包时需授予此仓库 Actions 对该包的访问权。
+4. 新部署复制配置示例：
 
-运行后，访问 `http://<服务器IP>:5000` 即可进入系统。首次登录密码默认为 `admin`，请在登录后立即通过“修改密码”功能更新密码以保障安全。
+   ```bash
+   cp .env.example .env
+   ```
+
+   编辑 `.env`：`IMAGE` 已设置为 `ghcr.io/lcyan/office365-manager:latest`，为 `FLASK_SECRET_KEY` 填入随机长字符串。生产部署可使用版本标签或镜像摘要固定版本。
+
+   ```bash
+   docker compose pull
+   docker compose up -d
+   ```
+
+访问 `http://<服务器IP>:5000`，首次登录密码为 `admin`，登录后立即修改。Compose 将 `./data` 挂载到 `/app/data`，使用 `CONFIG_FILE=/app/data/config.json` 持久化配置；没有文件时才初始化。**已有部署先执行下方迁移步骤，不要直接重建旧容器。**
 
 ## 🛠 项目特点
 
@@ -39,25 +51,97 @@ docker run -d -p 5000:5000 --name office365-manager saitomikuya/office365-manage
    docker build -t office365-manager .
    ```
 
-3. 构建完成后运行容器：
+3. 构建后运行容器，先设置 `FLASK_SECRET_KEY` 环境变量：
 
    ```bash
-   docker run -d -p 5000:5000 --name office365-manager office365-manager
+   mkdir -p data
+   docker run -d -p 5000:5000 --name office365-manager \
+     -e FLASK_SECRET_KEY -e CONFIG_FILE=/app/data/config.json \
+     --mount type=bind,src="$(pwd)/data",dst=/app/data office365-manager
    ```
 
    默认密码同样是 `admin`，请登陆后及时修改。
 
-4. （可选）如果希望持久化配置和密码，请将容器中的配置文件目录挂载到宿主机。例如：
+4. （可选）**自定义许可映射**：更新 `sku_product_mapping.json` 后重新构建镜像；外部映射覆盖内置产品名称。
+
+未设置 `CONFIG_FILE` 时仍兼容 `/app/config.json`。旧文档中的 `/usr/src/app/office365-manager/config.json` 不是本镜像读取的路径。继续使用单文件挂载到 `/app/config.json` 时必须提前放入有效 JSON；推荐使用目录挂载。
+
+## 📥 已有容器的配置迁移与回滚
+
+以下在 Linux 部署主机执行，将 `office365-manager` 替换为旧容器名。迁移期间停止页面配置编辑，等待后台任务完成。不要先删除或重建旧容器，宿主机空文件不能代替容器内配置。
+
+1. 从旧容器备份并验证（主机需有 Python 3），不输出凭证：
 
    ```bash
-   docker run -d -p 5000:5000 \
-     -v /path/to/persist/config.json:/usr/src/app/office365-manager/config.json \
-     --name office365-manager office365-manager
+   set -eu
+   umask 077
+   backup_dir="backups/$(date +%Y%m%d-%H%M%S)"
+   mkdir -p "$backup_dir" data
+   docker cp office365-manager:/app/config.json "$backup_dir/config.json"
+   python3 - "$backup_dir/config.json" <<'PY'
+   import json, sys
+   with open(sys.argv[1], encoding='utf-8') as stream:
+       config = json.load(stream)
+   assert isinstance(config, dict)
+   assert isinstance(config.get('password_hash'), str) and config['password_hash']
+   assert isinstance(config.get('organizations'), list)
+   for org in config['organizations']:
+       assert isinstance(org, dict)
+       assert all(isinstance(org.get(k), str) and org[k]
+                  for k in ('id', 'name', 'client_id', 'tenant_id', 'client_secret'))
+   print('配置验证通过，组织数：', len(config['organizations']))
+   PY
    ```
 
-5. （可选）**自定义许可映射**：项目根目录提供了 `sku_product_mapping.json` 文件，包含 Microsoft 365/Office 365 的 SKU 与产品名称的完整对应关系。本应用在启动时会自动加载该文件并覆盖默认映射。如果 Microsoft 发布了新的 SKU，您可以更新此 JSON 文件（例如通过 Excel 转换脚本生成），然后重启容器即可生效。
+   组织数量不符时停止迁移并确认容器。旧部署设置了 `CONFIG_FILE` 时按实际路径备份。保留独立备份并限制访问权限。
 
-这样即使删除容器，配置文件也会保留在宿主机的 `/path/to/persist/config.json` 位置。
+2. 验证通过后，在同一 shell 中备份宿主机原文件，再安装配置：
+
+   ```bash
+   if [ -e data/config.json ]; then
+     cp data/config.json "$backup_dir/config-host-before.json"
+   fi
+   cp "$backup_dir/config.json" data/config.json
+   chmod 600 data/config.json "$backup_dir/config.json"
+   ```
+
+3. 按快速启动说明设置 `.env`。使用独立 Compose 项目名保留旧容器供回滚：
+
+   ```bash
+   docker compose -p office365-ghcr pull
+   docker stop office365-manager
+   docker compose -p office365-ghcr up -d
+   docker compose -p office365-ghcr logs --tail=50
+   ```
+
+4. 用原密码登录，核对组织数量与 API 状态。执行 `docker compose -p office365-ghcr up -d --force-recreate` 后再次验证持久化，再考虑清理旧容器。
+
+   如启动失败或配置不符，执行 `docker compose -p office365-ghcr stop`，再执行 `docker start office365-manager` 恢复原容器。回滚前备份新服务配置；新服务上线后的修改不会自动回写旧容器。
+
+空文件、无效 JSON 或缺少必需字段会明确报错并保留原文件，不会自动重置配置。`.gitignore` 排除配置、`.env`、数据和备份；Docker 构建上下文只允许应用代码与静态资源。
+
+## 🧪 本地开发与验证
+
+```bash
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# PowerShell: .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+python -m flask --app app run --debug --port 5000
+```
+
+测试使用临时配置和模拟 Graph/MSAL，不访问真实租户。Flask 已更新到 3.1.3，以兼容当前 Werkzeug。
+
+## ⏱ Graph 请求与缓存
+
+- Graph 和 MSAL 连接/读取超时为 `(5, 15)` 秒。Graph 使用线程独立 Session 复用连接，不新增自动重试；MSAL 保留库内置的连接重试。
+- 成功概况按组织缓存 60 秒，点击“刷新概况”强制更新。数据不完整时展示提示，不缓存为完整结果；缺失统计显示“—”。
+- Graph 写操作完成或超时后使该组织缓存失效，后台操作同样生效；编辑组织也清除令牌和角色定义缓存。
+- 日志记录 Graph 资源类别、状态、耗时和令牌获取耗时，不记录认证头、请求体或查询参数。
+- 首次加载仍串行执行，单次超时不是整页期限。保留单个同步 worker，避免多进程配置不同步，后续依据实测决定是否调整。
+
+发布后用 `docker buildx imagetools inspect ghcr.io/lcyan/office365-manager:latest` 核对 amd64/arm64 清单，并在两种架构上验证启动和 `/login`。
 
 ## 🔐 使用注意事项
 

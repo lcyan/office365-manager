@@ -1,0 +1,11 @@
+services:
+  office365-manager:
+    image: ${IMAGE:-ghcr.io/lcyan/office365-manager:latest}
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:?Set FLASK_SECRET_KEY in .env}
+      CONFIG_FILE: /app/data/config.json
+    volumes:
+      - ./data:/app/data

@@ -70,6 +70,12 @@
 
 {% elif mode == 'summary' %}
   <h2>组织概况</h2>
+  <p class="text-muted">更新于 {{ summary.updated_at }} · 概况缓存 60 秒
+    <a href="{{ url_for('list_users', view='summary', refresh=1) }}" class="btn btn-sm btn-secondary">刷新概况</a>
+  </p>
+  {% if summary.partial %}
+    <div class="alert alert-warning">部分统计或订阅详情暂时无法获取，请稍后刷新。缺失统计显示为“—”。</div>
+  {% endif %}
   {# 突出当前组织，并提供切换按钮 #}
   <div class="current-org-line">
     <span class="current-org-title">当前组织：</span>
@@ -81,7 +87,7 @@
       <div class="card text-center">
         <div class="card-body">
           <h5 class="card-title">全局管理员数</h5>
-          <p class="stat-number">{{ summary.global_admin_count }}</p>
+          <p class="stat-number">{{ summary.global_admin_count if summary.global_admin_count is not none else '—' }}</p>
         </div>
       </div>
     </div>
@@ -89,7 +95,7 @@
       <div class="card text-center">
         <div class="card-body">
           <h5 class="card-title">特权管理员数</h5>
-          <p class="stat-number">{{ summary.privileged_admin_count }}</p>
+          <p class="stat-number">{{ summary.privileged_admin_count if summary.privileged_admin_count is not none else '—' }}</p>
         </div>
       </div>
     </div>
@@ -195,9 +201,13 @@
           <td>{{ user.givenName or '—' }}</td>
           <td>{{ user.userPrincipalName }}</td>
           <td>
+            {% if not roles_available %}
+              <span class="text-muted">角色信息暂不可用</span>
+            {% else %}
             {% if user.is_global_admin %}<span class="badge bg-danger">全局管理员</span>{% endif %}
             {% if user.is_privileged_admin %}<span class="badge bg-warning text-dark">特权角色管理员</span>{% endif %}
             {% if not user.is_global_admin and not user.is_privileged_admin %}<span class="text-muted">普通用户</span>{% endif %}
+            {% endif %}
           </td>
           <td>
             <a href="{{ url_for('user_detail', user_id=user.id) }}" class="btn btn-sm btn-primary">查看</a>

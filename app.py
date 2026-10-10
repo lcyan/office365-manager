@@ -16,12 +16,39 @@ from msal import ConfidentialClientApplication
 # Path to the configuration file used to store the hashed password and
 # organization connection details.  The configuration file is persisted on
 # disk so that organizations and passwords survive container restarts.
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.json')
+CONFIG_FILE = os.environ.get('CONFIG_FILE', os.path.join(os.path.dirname(__file__), 'config.json'))
 
 # Initialise the Flask application.  A secret key is required for session
 # management.  In production you should override this via the environment.
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'changeme-secret')
+app.logger.setLevel('INFO')
+
+HTTP_TIMEOUT = (5, 15)
+SUMMARY_CACHE_TTL = 60
+_http_local = threading.local()
+_summary_lock = threading.Lock()
+summary_cache: Dict[str, Dict[str, Any]] = {}
+_summary_versions: Dict[str, int] = {}
+
+
+def get_http_session() -> requests.Session:
+    if not hasattr(_http_local, 'session'):
+        _http_local.session = requests.Session()
+    return _http_local.session
+
+
+def is_graph_collection(response: Any) -> bool:
+    return isinstance(response, dict) and 'error' not in response and isinstance(response.get('value'), list)
+
+
+def invalidate_org_cache(org_id: str) -> None:
+    with _summary_lock:
+        summary_cache.pop(org_id, None)
+        _summary_versions[org_id] = _summary_versions.get(org_id, 0) + 1
+    for key in list(user_paging_cache):
+        if key[0] == org_id:
+            user_paging_cache.pop(key, None)
 
 # In‑memory cache for access tokens.  Keys are organisation IDs and values are
 # dicts containing the token and its expiry time.  This reduces the number of
@@ -138,11 +165,25 @@ def load_config() -> Dict[str, Any]:
             "password_hash": hashlib.sha256("admin".encode()).hexdigest(),
             "organizations": []
         }
+        os.makedirs(os.path.dirname(os.path.abspath(CONFIG_FILE)), exist_ok=True)
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(default_config, f, indent=4)
         return default_config
-    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            loaded = json.load(f)
+    except json.JSONDecodeError:
+        raise ValueError('配置文件为空或 JSON 无效，请从已验证的备份恢复；原文件未修改。') from None
+    if (not isinstance(loaded, dict)
+            or not isinstance(loaded.get('password_hash'), str)
+            or not loaded['password_hash']
+            or not isinstance(loaded.get('organizations'), list)
+            or any(not isinstance(org, dict)
+                   or any(not isinstance(org.get(key), str) or not org[key]
+                          for key in ('id', 'name', 'client_id', 'tenant_id', 'client_secret'))
+                   for org in loaded['organizations'])):
+        raise ValueError('配置文件结构无效，需要 password_hash 和完整的 organizations 列表；原文件未修改。')
+    return loaded
 
 
 def save_config(config: Dict[str, Any]) -> None:
@@ -186,21 +227,22 @@ def get_access_token(org: Dict[str, str]) -> Optional[str]:
         return cache_entry['access_token']
 
     authority = f"https://login.microsoftonline.com/{org['tenant_id']}"
-    client = ConfidentialClientApplication(
-        client_id=org['client_id'],
-        client_credential=org['client_secret'],
-        authority=authority
-    )
-
-    # Attempt to silently obtain a token from the MSAL cache.  This may fail
-    # when no token has been cached yet, so fall back to acquiring a new one.
-    result = client.acquire_token_silent(
-        scopes=["https://graph.microsoft.com/.default"], account=None
-    )
-    if not result:
+    started = time.monotonic()
+    try:
+        client = ConfidentialClientApplication(
+            client_id=org['client_id'],
+            client_credential=org['client_secret'],
+            authority=authority,
+            timeout=HTTP_TIMEOUT
+        )
         result = client.acquire_token_for_client(
             scopes=["https://graph.microsoft.com/.default"]
         )
+    except (requests.RequestException, ValueError) as exc:
+        app.logger.warning('Token acquisition failed: %s', type(exc).__name__)
+        return None
+    finally:
+        app.logger.info('Token acquisition elapsed_ms=%.0f', (time.monotonic() - started) * 1000)
 
     if 'access_token' in result:
         token_cache[org['id']] = {
@@ -240,8 +282,14 @@ def graph_request(org: Dict[str, str], method: str, endpoint: str,
     if extra_headers:
         headers.update(extra_headers)
     url = f"https://graph.microsoft.com/v1.0{endpoint}"
+    started = time.monotonic()
+    status = None
+    outcome = 'response'
+    # Log only the resource category, never IDs, query strings, or response bodies.
+    resource = endpoint.split('?', 1)[0].strip('/').split('/')[0]
     try:
-        response = requests.request(method, url, headers=headers, params=params, json=data)
+        response = get_http_session().request(method, url, headers=headers, params=params, json=data, timeout=HTTP_TIMEOUT)
+        status = response.status_code
         # If the token has expired, clear the cache entry so the next call will refresh
         if response.status_code == 401:
             token_cache.pop(org['id'], None)
@@ -250,10 +298,8 @@ def graph_request(org: Dict[str, str], method: str, endpoint: str,
         # JSON error body and return it.  This allows callers to surface
         # error messages rather than always treating errors as None.
         if response.status_code >= 400:
-            try:
-                return response.json()
-            except Exception:
-                return None
+            error_response = response.json()
+            return error_response if isinstance(error_response, dict) and error_response.get('error') else None
         # No content indicates success without body.  Return an empty dict so callers
         # can treat None as error and truthy as success.
         if response.status_code == 204:
@@ -263,16 +309,22 @@ def graph_request(org: Dict[str, str], method: str, endpoint: str,
             return response.text.strip()
         # Otherwise return parsed JSON
         return response.json()
-    except requests.RequestException as exc:
-        # Log exception for debugging; return None
-        print(f"Graph API error on {endpoint}: {exc}")
+    except (requests.RequestException, ValueError) as exc:
+        outcome = type(exc).__name__
+        app.logger.warning('Graph request failed resource=%s error=%s', resource, outcome)
         return None
+    finally:
+        if method.upper() not in ('GET', 'HEAD'):
+            # A timed-out write may still have succeeded upstream.
+            invalidate_org_cache(org['id'])
+        app.logger.info('Graph method=%s resource=%s status=%s outcome=%s elapsed_ms=%.0f',
+                        method, resource, status, outcome, (time.monotonic() - started) * 1000)
 
 
 # Helper to fetch a role definition ID by display name.  If the role is not
 # found this returns None.  This function caches results locally to avoid
 # repeated API calls for the same role name.
-_role_cache: Dict[str, str] = {}
+_role_cache: Dict[Tuple[str, str], str] = {}
 
 # Global paging cache for user lists.  Keys are tuples of
 # (organisation ID, search query, role filter, page size).  Each entry
@@ -284,16 +336,17 @@ user_paging_cache: Dict[Tuple[str, str, str, int], Dict[str, Any]] = {}
 
 
 def get_role_definition_id(org: Dict[str, str], display_name: str) -> Optional[str]:
-    if display_name in _role_cache:
-        return _role_cache[display_name]
+    cache_key = (org['id'], display_name)
+    if cache_key in _role_cache:
+        return _role_cache[cache_key]
     params = {
         '$filter': f"displayName eq '{display_name}'",
         '$select': 'id,displayName'
     }
     resp = graph_request(org, 'GET', '/roleManagement/directory/roleDefinitions', params=params)
-    if resp and 'value' in resp and resp['value']:
+    if is_graph_collection(resp) and resp['value']:
         role_id = resp['value'][0]['id']
-        _role_cache[display_name] = role_id
+        _role_cache[cache_key] = role_id
         return role_id
     return None
 
@@ -459,6 +512,12 @@ def edit_org(org_id: str) -> Any:
         org['tenant_id'] = tenant_id
         org['client_secret'] = client_secret
         save_config(config)
+        token_cache.pop(org_id, None)
+        invalidate_org_cache(org_id)
+        org_api_status.pop(org_id, None)
+        for key in list(_role_cache):
+            if key[0] == org_id:
+                _role_cache.pop(key, None)
         flash('组织信息已更新。')
         return redirect(url_for('manage_orgs'))
     # GET request: show edit form
@@ -478,7 +537,7 @@ def test_org(org_id: str) -> Any:
         return redirect(url_for('manage_orgs'))
     # Attempt to fetch subscribed SKUs as a basic connectivity check
     resp = graph_request(org, 'GET', '/subscribedSkus')
-    if resp is not None:
+    if is_graph_collection(resp):
         org_api_status[org_id] = True
         flash(f"组织 {org['name']} API 测试成功。")
     else:
@@ -502,7 +561,7 @@ def test_all_orgs() -> Any:
     failure = 0
     for org in orgs:
         resp = graph_request(org, 'GET', '/subscribedSkus')
-        if resp is not None:
+        if is_graph_collection(resp):
             org_api_status[org['id']] = True
             success += 1
         else:
@@ -595,6 +654,11 @@ def delete_org(org_id: str) -> Any:
         save_config(config)
         # Remove token cache entry as well
         token_cache.pop(org_id, None)
+        invalidate_org_cache(org_id)
+        org_api_status.pop(org_id, None)
+        for key in list(_role_cache):
+            if key[0] == org_id:
+                _role_cache.pop(key, None)
         # Clear active organisation if it was removed
         if session.get('org_id') == org_id:
             session.pop('org_id', None)
@@ -677,9 +741,18 @@ def list_users() -> Any:
 
     # Summary view by default
     if view_mode != 'users':
+        if request.args.get('refresh'):
+            invalidate_org_cache(org_id)
+        with _summary_lock:
+            cached = summary_cache.get(org_id)
+            version = _summary_versions.get(org_id, 0)
+        if cached and time.monotonic() < cached['expires_at']:
+            return render_template('users.html', mode='summary', summary=cached['summary'],
+                                   organizations=config.get('organizations', []), active_org_id=org_id)
+        cache_complete = True
         # Verify API connectivity before loading summary
         api_resp = graph_request(org, 'GET', '/subscribedSkus')
-        if api_resp is None:
+        if not is_graph_collection(api_resp):
             org_api_status[org_id] = False
             return render_template(
                 'users.html',
@@ -699,7 +772,7 @@ def list_users() -> Any:
             try:
                 subs_resp = graph_request(org, 'GET', '/directory/subscriptions')
                 # subs_resp may be a list of subscription objects
-                if subs_resp and 'value' in subs_resp:
+                if is_graph_collection(subs_resp):
                     for sub in subs_resp['value']:
                         sku_id = sub.get('skuId')
                         if sku_id:
@@ -707,9 +780,10 @@ def list_users() -> Any:
                                 'status': sub.get('status'),
                                 'renewal_date': sub.get('nextLifecycleDateTime')
                             }
+                else:
+                    cache_complete = False
             except Exception:
-                # ignore errors – fallback to default status/renewal
-                pass
+                cache_complete = False
             for sku in api_resp['value']:
                 prepaid = sku.get('prepaidUnits', {})
                 sku_part = sku.get('skuPartNumber')
@@ -737,16 +811,18 @@ def list_users() -> Any:
                 })
         summary['licences'] = licences
         # Count Global and Privileged administrators
-        global_admin_count = 0
-        privileged_admin_count = 0
+        global_admin_count = None
+        privileged_admin_count = None
         ga_id = get_role_definition_id(org, 'Global Administrator')
         pra_id = get_role_definition_id(org, 'Privileged Role Administrator')
         if ga_id:
             ga_assignments = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"roleDefinitionId eq '{ga_id}'"})
-            global_admin_count = len(ga_assignments.get('value', [])) if ga_assignments else 0
+            if is_graph_collection(ga_assignments):
+                global_admin_count = len(ga_assignments['value'])
         if pra_id:
             pra_assignments = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"roleDefinitionId eq '{pra_id}'"})
-            privileged_admin_count = len(pra_assignments.get('value', [])) if pra_assignments else 0
+            if is_graph_collection(pra_assignments):
+                privileged_admin_count = len(pra_assignments['value'])
         summary['global_admin_count'] = global_admin_count
         summary['privileged_admin_count'] = privileged_admin_count
         # Retrieve total user count if possible.  graph_request returns a
@@ -761,6 +837,15 @@ def list_users() -> Any:
             except ValueError:
                 total_users = None
         summary['total_users'] = total_users
+        if global_admin_count is None or privileged_admin_count is None or total_users is None:
+            cache_complete = False
+        summary['updated_at'] = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
+        summary['partial'] = not cache_complete
+        if cache_complete:
+            with _summary_lock:
+                # A background mutation must not be overwritten by an older read.
+                if _summary_versions.get(org_id, 0) == version:
+                    summary_cache[org_id] = {'summary': summary, 'expires_at': time.monotonic() + SUMMARY_CACHE_TTL}
         return render_template(
             'users.html',
             mode='summary',
@@ -803,13 +888,16 @@ def list_users() -> Any:
             flash(f'无法找到角色 {role_filter}。')
             return redirect(url_for('list_users'))
         assignments = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"roleDefinitionId eq '{role_id}'"})
+        if not is_graph_collection(assignments):
+            flash('无法获取角色成员，请稍后刷新重试。')
+            return render_template('users.html', mode='api_unavailable', active_org_id=org_id)
         principal_ids = [a['principalId'] for a in assignments.get('value', [])]
         # Fetch user details for each principal ID
         all_users: List[Dict[str, Any]] = []
         for uid in principal_ids:
             # Include givenName and surname when selecting fields
             user_data = graph_request(org, 'GET', f'/users/{uid}', params={'$select': 'id,displayName,userPrincipalName,mail,givenName,surname'})
-            if user_data:
+            if isinstance(user_data, dict) and 'id' in user_data and 'error' not in user_data:
                 # Apply search filtering if provided; match displayName, UPN, givenName or surname
                 if search_query:
                     q = search_query.lower()
@@ -820,6 +908,9 @@ def list_users() -> Any:
                     if not (dn.startswith(q) or upn.startswith(q) or given.startswith(q) or sur.startswith(q)):
                         continue
                 all_users.append(user_data)
+            else:
+                flash('部分角色成员信息获取失败，请稍后刷新重试。')
+                return render_template('users.html', mode='api_unavailable', active_org_id=org_id)
         # Determine total pages based on page_size
         total_pages = (len(all_users) + page_size - 1) // page_size
         # Bound the page number
@@ -856,8 +947,9 @@ def list_users() -> Any:
                         f"or startswith(givenName,'{safe_q}') or startswith(surname,'{safe_q}')"
                     )
                 response = graph_request(org, 'GET', '/users', params=params)
-                if not response:
-                    break
+                if not is_graph_collection(response):
+                    flash('用户列表获取失败，请稍后刷新重试。')
+                    return render_template('users.html', mode='api_unavailable', active_org_id=org_id)
                 page_users = response.get('value', [])
                 pages.append(page_users)
                 # Capture nextLink if present
@@ -874,8 +966,9 @@ def list_users() -> Any:
                 else:
                     next_endpoint = next_link
                 response = graph_request(org, 'GET', next_endpoint)
-                if not response:
-                    break
+                if not is_graph_collection(response):
+                    flash('用户列表获取失败，请稍后刷新重试。')
+                    return render_template('users.html', mode='api_unavailable', active_org_id=org_id)
                 page_users = response.get('value', [])
                 pages.append(page_users)
                 next_link = response.get('@odata.nextLink')
@@ -913,14 +1006,25 @@ def list_users() -> Any:
     # Fetch admin assignments once to mark roles for current page
     global_admin_set: set = set()
     privileged_admin_set: set = set()
+    roles_available = True
     ga_id = get_role_definition_id(org, 'Global Administrator')
     pra_id = get_role_definition_id(org, 'Privileged Role Administrator')
     if ga_id:
         ga_assignments = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"roleDefinitionId eq '{ga_id}'"})
-        global_admin_set = {a['principalId'] for a in ga_assignments.get('value', [])}
+        if is_graph_collection(ga_assignments):
+            global_admin_set = {a['principalId'] for a in ga_assignments['value']}
+        else:
+            roles_available = False
+    else:
+        roles_available = False
     if pra_id:
         pra_assignments = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"roleDefinitionId eq '{pra_id}'"})
-        privileged_admin_set = {a['principalId'] for a in pra_assignments.get('value', [])}
+        if is_graph_collection(pra_assignments):
+            privileged_admin_set = {a['principalId'] for a in pra_assignments['value']}
+        else:
+            roles_available = False
+    else:
+        roles_available = False
     # Annotate users with role flags
     for u in users:
         uid = u.get('id')
@@ -936,6 +1040,7 @@ def list_users() -> Any:
         'users.html',
         mode='list',
         users=users,
+        roles_available=roles_available,
         role_filter=role_filter,
         search=search_query,
         page=page,
@@ -973,7 +1078,7 @@ def user_detail(user_id: str) -> Any:
             '$select': 'id,displayName,userPrincipalName,accountEnabled,lastPasswordChangeDateTime,createdDateTime'
         }
     )
-    if not user:
+    if not isinstance(user, dict) or 'error' in user or not user.get('id'):
         flash('无法获取用户信息。')
         return redirect(url_for('list_users'))
 
@@ -1043,6 +1148,9 @@ def assign_licence(user_id: str) -> Any:
         selected_sku_ids = request.form.getlist('sku_ids')
         # Fetch currently assigned licences to compare additions and removals
         current_lic_resp = graph_request(org, 'GET', f'/users/{user_id}/licenseDetails')
+        if not is_graph_collection(current_lic_resp):
+            flash('无法获取当前订阅，未执行订阅变更，请稍后重试。')
+            return redirect(url_for('user_detail', user_id=user_id))
         current_sku_ids: set = set()
         if current_lic_resp and 'value' in current_lic_resp:
             for lic in current_lic_resp['value']:
@@ -1073,10 +1181,10 @@ def assign_licence(user_id: str) -> Any:
         # Determine if the response indicates an error
         error_msg = ''
         if resp is None:
-            error_msg = '令牌无效或权限不足'
+            error_msg = '请求超时、网络或认证失败，请刷新确认当前状态后再操作'
         elif isinstance(resp, dict) and resp.get('error'):
             err = resp.get('error') or {}
-            error_msg = err.get('message', '')
+            error_msg = err.get('message') or 'Graph 拒绝了订阅变更'
         if error_msg:
             flash('订阅更新失败：' + error_msg)
         else:
@@ -1181,10 +1289,10 @@ def update_user(user_id: str) -> Any:
         # failure.  An empty dict indicates success (204 No Content).
         error_msg = ''
         if update_resp is None:
-            error_msg = '令牌无效或权限不足'
+            error_msg = '请求超时、网络或认证失败，请刷新确认当前状态后再操作'
         elif isinstance(update_resp, dict) and update_resp.get('error'):
             err = update_resp.get('error') or {}
-            error_msg = err.get('message', '')
+            error_msg = err.get('message') or 'Graph 拒绝了账户变更'
         if error_msg:
             # One or more updates failed; display Graph error message
             msgs: List[str] = []
@@ -1207,6 +1315,9 @@ def update_user(user_id: str) -> Any:
         pra_id = get_role_definition_id(org, 'Privileged Role Administrator')
         # Fetch existing assignments for this user
         assignments_resp = graph_request(org, 'GET', '/roleManagement/directory/roleAssignments', params={'$filter': f"principalId eq '{user_id}'"})
+        if not ga_id or not pra_id or not is_graph_collection(assignments_resp):
+            flash('无法获取当前角色，未执行角色变更，请稍后重试。')
+            return redirect(url_for('user_detail', user_id=user_id))
         assignments = assignments_resp.get('value', []) if assignments_resp else []
         # Determine if GA or PRA assignments exist
         ga_assignment_id = None
@@ -1217,40 +1328,48 @@ def update_user(user_id: str) -> Any:
             if pra_id and a.get('roleDefinitionId') == pra_id:
                 pra_assignment_id = a['id']
         # Helper to assign role
-        def add_role_assignment(role_def_id: str) -> None:
+        def add_role_assignment(role_def_id: str) -> bool:
             data = {
                 'principalId': user_id,
                 'roleDefinitionId': role_def_id,
                 'directoryScopeId': '/'
             }
-            graph_request(org, 'POST', '/roleManagement/directory/roleAssignments', data=data)
+            result = graph_request(org, 'POST', '/roleManagement/directory/roleAssignments', data=data)
+            return isinstance(result, dict) and 'error' not in result
         # Helper to remove assignment by ID
-        def remove_assignment(assignment_id: str) -> None:
-            graph_request(org, 'DELETE', f'/roleManagement/directory/roleAssignments/{assignment_id}')
+        def remove_assignment(assignment_id: str) -> bool:
+            result = graph_request(org, 'DELETE', f'/roleManagement/directory/roleAssignments/{assignment_id}')
+            return isinstance(result, dict) and 'error' not in result
         # Process according to selected role
+        role_updated = True
         if selected_role == 'normal':
             # Remove any admin roles
             if ga_assignment_id:
-                remove_assignment(ga_assignment_id)
+                role_updated = remove_assignment(ga_assignment_id)
             if pra_assignment_id:
-                remove_assignment(pra_assignment_id)
-            flash('已设置为普通用户。')
+                role_updated = remove_assignment(pra_assignment_id) and role_updated
+            if role_updated:
+                flash('已设置为普通用户。')
         elif selected_role == 'Global Administrator':
             # Ensure GA assignment exists
             if not ga_assignment_id and ga_id:
-                add_role_assignment(ga_id)
+                role_updated = add_role_assignment(ga_id)
             # Remove PRA if exists
-            if pra_assignment_id:
-                remove_assignment(pra_assignment_id)
-            flash('已设置为全局管理员。')
+            if role_updated and pra_assignment_id:
+                role_updated = remove_assignment(pra_assignment_id)
+            if role_updated:
+                flash('已设置为全局管理员。')
         elif selected_role == 'Privileged Role Administrator':
             # Ensure PRA assignment exists
             if not pra_assignment_id and pra_id:
-                add_role_assignment(pra_id)
+                role_updated = add_role_assignment(pra_id)
             # Remove GA if exists
-            if ga_assignment_id:
-                remove_assignment(ga_assignment_id)
-            flash('已设置为特权角色管理员。')
+            if role_updated and ga_assignment_id:
+                role_updated = remove_assignment(ga_assignment_id)
+            if role_updated:
+                flash('已设置为特权角色管理员。')
+        if not role_updated:
+            flash('角色更新未完成，请刷新确认当前角色后再操作。')
     return redirect(url_for('user_detail', user_id=user_id))
 
 # ---------------------------------------------------------------------------
