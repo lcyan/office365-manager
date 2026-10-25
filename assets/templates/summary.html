@@ -1,0 +1,64 @@
+{{define "content"}}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">组织概况 · {{.OrgName}}</h1>
+        <p class="page-subtitle">更新于 {{.Summary.UpdatedAt}} · 缓存 60 秒</p>
+    </div>
+    <div class="flex gap-2">
+        <a href="/users?view=summary&amp;refresh=1" class="btn btn-outline btn-sm">刷新概况</a>
+        <a href="/users?reset=1" class="btn btn-outline btn-sm">切换组织</a>
+    </div>
+</div>
+
+{{if .Summary.Partial}}
+<div class="alert alert-warning">
+    部分统计或订阅详情暂时无法获取，请稍后刷新。缺失统计显示为“—”。
+</div>
+{{end}}
+
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-label">全局管理员数</div>
+        <div class="stat-value">{{if .Summary.GlobalAdminCount}}{{.Summary.GlobalAdminCount}}{{else}}—{{end}}</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-label">特权管理员数</div>
+        <div class="stat-value">{{if .Summary.PrivilegedAdminCount}}{{.Summary.PrivilegedAdminCount}}{{else}}—{{end}}</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-label">总用户数</div>
+        <div class="stat-value">{{if .Summary.TotalUsers}}{{.Summary.TotalUsers}}{{else}}—{{end}}</div>
+    </div>
+</div>
+
+<h2 class="section-title">许可情况</h2>
+<div class="table-wrap mb-3">
+    <table class="table">
+        <thead>
+            <tr>
+                <th>产品名称</th>
+                <th>SKU 名称</th>
+                <th>已分配/总数量</th>
+                <th>可用数量</th>
+                <th>订阅状态</th>
+                <th>续订到期日期</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Summary.Licences}}
+            <tr>
+                <td>{{.ProductName}}</td>
+                <td class="code">{{.SkuPart}}</td>
+                <td>{{.Ratio}}</td>
+                <td>{{.Available}}</td>
+                <td><span class="badge {{.StatusBadge}}">{{.StatusLabel}}</span></td>
+                <td>{{.Renewal}}</td>
+            </tr>
+            {{else}}
+            <tr><td colspan="6" class="table-empty">无订阅信息。</td></tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+<a href="/users?view=users" class="btn btn-primary">查看用户列表</a>
+{{end}}

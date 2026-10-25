@@ -229,6 +229,15 @@ a {
   background-color: hsl(var(--destructive) / 0.9);
 }
 
+.btn-warning {
+  background-color: hsl(var(--warning));
+  color: hsl(var(--warning-foreground));
+}
+
+.btn-warning:hover {
+  background-color: hsl(var(--warning) / 0.9);
+}
+
 .btn-ghost {
   background-color: transparent;
   color: hsl(var(--foreground));

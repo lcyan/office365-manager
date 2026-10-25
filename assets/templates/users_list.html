@@ -1,0 +1,99 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">用户列表 · {{.OrgName}}</h1>
+    <div class="flex gap-2">
+        <a href="/users/add" class="btn btn-primary btn-sm">添加用户</a>
+        <a href="/users?view=users&amp;refresh=1" class="btn btn-outline btn-sm">刷新列表</a>
+        <a href="/users" class="btn btn-outline btn-sm">返回概况</a>
+    </div>
+</div>
+
+<form class="card mb-3" method="get" action="/users">
+    <div class="card-content form-grid">
+        <input type="hidden" name="view" value="users">
+        <input type="hidden" name="page" value="1">
+        <div class="field">
+            <label class="label" for="search">搜索用户</label>
+            <input class="input" type="text" id="search" name="search" value="{{.Search}}"
+                   placeholder="按显示名称、登录名、姓或名前缀搜索">
+        </div>
+        <div class="field">
+            <label class="label" for="role">筛选角色</label>
+            <select class="select" id="role" name="role">
+                <option value="" {{if eq .Role ""}}selected{{end}}>全部</option>
+                <option value="Global Administrator" {{if eq .Role "Global Administrator"}}selected{{end}}>全局管理员</option>
+                <option value="Privileged Role Administrator" {{if eq .Role "Privileged Role Administrator"}}selected{{end}}>特权角色管理员</option>
+            </select>
+        </div>
+        <div class="field">
+            <label class="label" for="page_size">每页数量</label>
+            <select class="select" id="page_size" name="page_size">
+                <option value="50" {{if eq .PageSize 50}}selected{{end}}>50</option>
+                <option value="100" {{if eq .PageSize 100}}selected{{end}}>100</option>
+                <option value="200" {{if eq .PageSize 200}}selected{{end}}>200</option>
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary">应用</button>
+    </div>
+</form>
+
+<div class="table-wrap">
+    <table class="table">
+        <thead>
+            <tr>
+                <th>显示名称</th>
+                <th>姓</th>
+                <th>名</th>
+                <th>登录名</th>
+                <th>管理员角色</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Users}}
+            <tr>
+                <td>
+                    {{.DisplayName}}
+                    {{if ne .Kind "user"}}<span class="badge badge-outline">{{.Kind}}</span>{{end}}
+                </td>
+                <td>{{if .Surname}}{{.Surname}}{{else}}—{{end}}</td>
+                <td>{{if .GivenName}}{{.GivenName}}{{else}}—{{end}}</td>
+                <td>{{if .UPN}}{{.UPN}}{{else}}—{{end}}</td>
+                <td>
+                    {{if not $.RolesAvailable}}<span class="text-muted">角色信息暂不可用</span>
+                    {{else if .IsGlobalAdmin}}<span class="badge badge-destructive">全局管理员</span>
+                    {{else if .IsPrivilegedAdmin}}<span class="badge badge-warning">特权角色管理员</span>
+                    {{else}}<span class="text-muted">普通用户</span>{{end}}
+                </td>
+                <td>
+                    {{if eq .Kind "user"}}<a href="/user/{{.ID}}" class="btn btn-primary btn-sm">查看</a>
+                    {{else}}<span class="text-muted">非用户主体</span>{{end}}
+                </td>
+            </tr>
+            {{else}}
+            <tr><td colspan="6" class="table-empty">未找到用户。</td></tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+
+<div class="pagination">
+    <div class="pagination-info">共 {{.TotalPages}} 页，当前第 {{.Page}} 页</div>
+    <ul class="page-list">
+        <li class="page-item {{if not .PrevURL}}disabled{{end}}">
+            {{if .PrevURL}}<a class="page-link" href="{{.PrevURL}}">上一页</a>
+            {{else}}<span class="page-link">上一页</span>{{end}}
+        </li>
+        {{range .PageLinks}}
+        <li class="page-item {{if .Active}}active{{end}}">
+            {{if .Active}}<span class="page-link">{{.Number}}</span>
+            {{else}}<a class="page-link" href="{{.URL}}">{{.Number}}</a>{{end}}
+        </li>
+        {{end}}
+        <li class="page-item {{if not .NextURL}}disabled{{end}}">
+            {{if .NextURL}}<a class="page-link" href="{{.NextURL}}">下一页</a>
+            {{else}}<span class="page-link">下一页</span>{{end}}
+        </li>
+    </ul>
+</div>
+{{end}}

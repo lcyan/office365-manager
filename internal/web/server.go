@@ -8,6 +8,7 @@ import (
 	"github.com/lcyan/office365-manager/internal/auth"
 	"github.com/lcyan/office365-manager/internal/config"
 	"github.com/lcyan/office365-manager/internal/graph"
+	"github.com/lcyan/office365-manager/internal/licenses"
 )
 
 // Server 聚合全部依赖并装配路由。
@@ -19,6 +20,8 @@ type Server struct {
 	render    *Renderer
 	graph     *graph.Client
 	apiStatus *orgStatus
+	catalog   *licenses.Catalog
+	summaries *summaryCache
 }
 
 // Deps 是构造 Server 的依赖集合。
@@ -28,6 +31,7 @@ type Deps struct {
 	Limiter  *auth.Limiter
 	Log      *slog.Logger
 	Graph    *graph.Client
+	Catalog  *licenses.Catalog
 }
 
 // New 构造 Server（渲染器从内嵌资源加载模板）。
@@ -40,6 +44,10 @@ func New(d Deps) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	catalog := d.Catalog
+	if catalog == nil {
+		catalog = licenses.NewCatalog(nil)
+	}
 	return &Server{
 		store:     d.Store,
 		sessions:  d.Sessions,
@@ -48,6 +56,8 @@ func New(d Deps) (*Server, error) {
 		render:    renderer,
 		graph:     d.Graph,
 		apiStatus: newOrgStatus(),
+		catalog:   catalog,
+		summaries: newSummaryCache(),
 	}, nil
 }
 
@@ -83,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /organizations/template", s.requireAuth(s.handleOrgTemplate))
 	mux.HandleFunc("POST /organizations/import", s.requireAuth(s.csrf(s.handleOrgImport)))
 	mux.HandleFunc("GET /select_org/{id}", s.requireAuth(s.handleSelectOrg))
+
+	mux.HandleFunc("GET /users", s.requireAuth(s.handleUsers))
+	mux.HandleFunc("GET /user/{id}", s.requireAuth(s.handleUserDetail))
 
 	mux.HandleFunc("/", s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)

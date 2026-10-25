@@ -1,0 +1,59 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">用户详情 · {{.OrgName}}</h1>
+    <a href="/users?view=users" class="btn btn-outline btn-sm">返回列表</a>
+</div>
+
+{{range .Warnings}}
+<div class="alert alert-warning">{{.}}</div>
+{{end}}
+
+<div class="card mb-4">
+    <div class="card-content">
+        <p><strong>显示名称：</strong>{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}—{{end}}</p>
+        <p><strong>登录名：</strong>{{if .User.UserPrincipalName}}{{.User.UserPrincipalName}}{{else}}—{{end}}</p>
+        <p><strong>账户启用：</strong>{{if .User.AccountEnabled}}是{{else}}否{{end}}</p>
+        {{if .User.CreatedAt}}<p><strong>创建时间：</strong>{{.User.CreatedAt}}</p>{{end}}
+        {{if .User.LastPasswordChangeAt}}<p><strong>上次密码修改：</strong>{{.User.LastPasswordChangeAt}}</p>{{end}}
+        <p><strong>角色：</strong>
+            {{range .Roles}}<span class="badge">{{.}}</span> {{else}}<span class="text-muted">无角色分配</span>{{end}}
+        </p>
+        <p><strong>订阅/许可证：</strong>
+            {{range .Licences}}<span class="badge badge-secondary">{{.ProductName}}（{{.SkuPart}}）</span> {{else}}<span class="text-muted">无订阅信息</span>{{end}}
+        </p>
+    </div>
+</div>
+
+<h2 class="section-title">修改信息</h2>
+<div class="card form-narrow mb-4">
+    <div class="card-content">
+        <form method="post" action="/user/{{.User.ID}}/update">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="field">
+                <label class="label" for="new_password">重置密码</label>
+                <input class="input" type="password" id="new_password" name="new_password" placeholder="留空则不修改">
+            </div>
+            <div class="field">
+                <label class="label" for="account_enabled">账户启用状态</label>
+                <select class="select" id="account_enabled" name="account_enabled">
+                    <option value="true" {{if .User.AccountEnabled}}selected{{end}}>启用</option>
+                    <option value="false" {{if not .User.AccountEnabled}}selected{{end}}>禁用</option>
+                </select>
+            </div>
+            <div class="field">
+                <label class="label" for="role">角色</label>
+                <select class="select" id="role" name="role">
+                    <option value="normal" {{if eq .CurrentRole "normal"}}selected{{end}}>普通用户</option>
+                    <option value="Global Administrator" {{if eq .CurrentRole "Global Administrator"}}selected{{end}}>全局管理员</option>
+                    <option value="Privileged Role Administrator" {{if eq .CurrentRole "Privileged Role Administrator"}}selected{{end}}>特权角色管理员</option>
+                </select>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <button type="submit" class="btn btn-primary">保存修改</button>
+                <a href="/user/{{.User.ID}}/license" class="btn btn-outline">分配订阅</a>
+                <a href="/user/{{.User.ID}}/delete" class="btn btn-destructive">删除用户</a>
+            </div>
+        </form>
+    </div>
+</div>
+{{end}}

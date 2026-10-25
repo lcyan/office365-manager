@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">组织概况</h1>
+</div>
+<div class="alert alert-destructive">
+    当前组织（{{.OrgName}}）的 API 不可用，请前往“组织管理”检查配置后重试。
+    {{if .ErrDetail}}<br><span class="text-muted">错误详情：{{.ErrDetail}}</span>{{end}}
+</div>
+<div class="flex flex-wrap gap-2">
+    <a href="/organizations" class="btn btn-warning">组织管理</a>
+    <a href="/users" class="btn btn-outline">返回概况</a>
+    <a href="/users?reset=1" class="btn btn-outline">切换组织</a>
+</div>
+{{end}}

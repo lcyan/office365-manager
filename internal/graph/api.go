@@ -276,6 +276,31 @@ func (c *Client) DeleteRoleAssignment(ctx context.Context, org config.Org, assig
 	return err
 }
 
+// NamedRoleAssignment 携带角色显示名的分配记录。
+type NamedRoleAssignment struct {
+	ID             string `json:"id"`
+	RoleDefinition struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"displayName"`
+	} `json:"roleDefinition"`
+}
+
+// RoleAssignmentsForPrincipalNamed 返回某主体的全部角色分配，
+// 通过 $expand=roleDefinition 携带角色显示名（跟随全部分页）。
+func (c *Client) RoleAssignmentsForPrincipalNamed(ctx context.Context, org config.Org, principalID string) ([]NamedRoleAssignment, error) {
+	if !ValidID(principalID) {
+		return nil, &Error{Op: "roleAssignments", HTTPStatus: http.StatusBadRequest, Message: "无效的主体 ID"}
+	}
+	params := url.Values{
+		"$top":    {"999"},
+		"$filter": {"principalId eq '" + Quote(principalID) + "'"},
+		"$expand": {"roleDefinition($select=id,displayName)"},
+	}
+	items, _, err := getCollection[NamedRoleAssignment](ctx, c, org,
+		"/roleManagement/directory/roleAssignments", params, nil, true)
+	return items, err
+}
+
 // unmarshalStrict 解码单对象响应，空体视为格式错误。
 func unmarshalStrict(body []byte, v any) error {
 	if len(bytes.TrimSpace(body)) == 0 {
