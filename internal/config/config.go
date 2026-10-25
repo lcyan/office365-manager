@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Version 是当前配置文件格式版本。旧版（无 version 字段）文件可读入，
@@ -233,10 +234,35 @@ func (s *Store) saveLocked() error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("关闭临时文件失败：%w", err)
 	}
-	if err := os.Rename(tmpName, s.path); err != nil {
+	// Windows 上杀软/索引器可能短暂锁定目标文件导致 rename 失败，
+	// 短重试后仍失败才放弃（Linux 上首次即成功）。
+	if err := renameWithRetry(tmpName, s.path); err != nil {
+		_ = removeWithRetry(tmpName)
 		return fmt.Errorf("替换配置文件失败：%w", err)
 	}
 	return nil
+}
+
+func renameWithRetry(oldPath, newPath string) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = os.Rename(oldPath, newPath); err == nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return err
+}
+
+func removeWithRetry(path string) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if err = os.Remove(path); err == nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return err
 }
 
 func validateOrg(org Org) error {

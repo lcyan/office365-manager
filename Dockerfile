@@ -1,34 +1,18 @@
-FROM python:3.10-slim
+# 构建阶段：静态编译单二进制。
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd cmd
+COPY internal internal
+COPY assets assets
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/office365-manager ./cmd/server
 
-LABEL maintainer="Office365 Manager"
-
-# Set work directory
+# 运行阶段：distroless 静态镜像（无 shell，体积约 20MB）。
+FROM gcr.io/distroless/static-debian12
 WORKDIR /app
-
-# Install system dependencies for locale support
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends locales && \
-    sed -i '/zh_CN.UTF-8/s/^# //g' /etc/locale.gen && \
-    locale-gen && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
-COPY app.py sku_product_mapping.json /app/
-COPY templates /app/templates
-COPY static /app/static
-
-# Set environment variables
-ENV LANG=zh_CN.UTF-8 \
-    LC_ALL=zh_CN.UTF-8 \
-    FLASK_APP=app.py \
-    PYTHONUNBUFFERED=1
-
-# Expose the port the app runs on
+COPY --from=build /out/office365-manager /app/office365-manager
+ENV CONFIG_FILE=/app/config.json
 EXPOSE 5000
-
-# Start the application using Gunicorn
-CMD ["gunicorn", "--workers", "1", "--access-logfile", "-", "-b", "0.0.0.0:5000", "app:app"]
+ENTRYPOINT ["/app/office365-manager"]

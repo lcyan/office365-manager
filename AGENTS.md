@@ -2,30 +2,30 @@
 
 ## Project Structure & Module Organization
 
-This Flask application manages Microsoft 365 tenants through MSAL authentication and Microsoft Graph. `app.py` contains routes, authentication, configuration persistence, token caching, and Graph helpers. `templates/` holds Jinja pages sharing `base.html`; `static/style.css` provides local styling. `sku_product_mapping.json` overrides built-in license names at startup. `screenshot/` contains documentation images. Dependencies are pinned in `requirements.txt`; `Dockerfile` uses Python 3.10 and Gunicorn. `tests/` contains isolated regression tests; `.github/workflows/docker.yml` builds amd64/arm64 GHCR images.
+This is a Go web application (module `github.com/lcyan/office365-manager`) that manages Microsoft 365 tenants through the Microsoft Graph API (client-credentials flow). `cmd/server/main.go` wires dependencies and starts the HTTP server. `internal/config` loads, validates, and atomically persists `config.json` (organizations + login password hash, with automatic migration of the legacy Python-version format). `internal/auth` provides argon2id password hashing (with transparent upgrade of legacy SHA-256 hashes) and login rate limiting. `internal/graph` wraps the Graph API: token cache per organization, unified OData escaping, GUID validation for object IDs, typed errors, count-based pagination, and nextLink following. `internal/web` contains sessions (HMAC-signed cookie), middleware (auth gate, CSRF, security headers), the template renderer, and all page handlers. `internal/background` runs retrying background tasks with structured logs. `internal/licenses` maps SKU part numbers to product names. `assets/` holds templates, static CSS (shadcn-style design tokens), and the SKU mapping, embedded via `go:embed` into a single binary.
 
 ## Build, Test, and Development Commands
 
-Run commands from the repository root:
+Run from the repository root:
 
-- `python -m venv .venv`: create a local environment; on PowerShell, activate with `.\.venv\Scripts\Activate.ps1`.
-- `python -m pip install -r requirements.txt`: install dependencies.
-- `python -m flask --app app run --debug --port 5000`: start local development at `http://127.0.0.1:5000`.
-- `docker build -t office365-manager .`: build the application image.
-- `docker run --rm -p 5000:5000 office365-manager`: run the image using Gunicorn.
+- `go vet ./...`: static analysis.
+- `go test ./...`: full test suite (all Graph calls are faked via test servers; tests never touch real tenants).
+- `DEV_MODE=1 go run ./cmd/server`: start locally on `:5000` (`SESSION_SECRET` optional in dev mode; required in production).
+- `go build -o office365-manager ./cmd/server`: build the binary.
+- `docker build -t office365-manager .`: multi-stage build (distroless static, ~20 MB).
 
 ## Coding Style & Naming Conventions
 
-Use four-space indentation in Python and CSS; preserve surrounding Jinja indentation. Use `snake_case` for Python functions, variables, and template filenames, and `UPPER_SNAKE_CASE` for constants. Follow existing annotations when changing Python functions. Keep interface text in Chinese and reuse shared templates and CSS classes. Route Graph calls through `graph_request` where applicable. No formatter or linter is configured. Keep changes focused; avoid unrelated refactoring and dependency changes.
+Standard Go formatting (`gofmt`) and idioms. Follow effective Go: exported identifiers documented with doc comments (Chinese is fine for this repo), errors wrapped with context via `fmt.Errorf("...: %w", err)`. Package-level state must be mutex-protected. Handler flow: build explicit view models (no global template injection), then render via `renderPage` or redirect via `redirect` so the session is always saved. Route all Graph access through `internal/graph` client methods — never build `$filter` strings by hand; use `graph.Quote` for OData literals and `graph.ValidID` before interpolating IDs into paths. UI text is Chinese; keep the shadcn-style CSS class vocabulary (`btn`, `card`, `badge`, `alert`, `table`, …) instead of introducing new utility classes ad hoc. Config writes only via `config.Store` methods (atomic).
 
 ## Testing Guidelines
 
-Run `python -m unittest discover -s tests -v` for the standard-library regression suite. No coverage threshold is configured. Manually verify affected flows: login/logout, organization switching, user pagination, roles, and license assignment. Check Graph error responses as well as success cases. Use a dedicated test tenant for account mutations. For automated tests, use `tests/test_*.py`, Flask's test client, mocked MSAL/Graph calls, and isolated configuration. Importing `app.py` creates `config.json` when absent.
+`go test ./...` must stay green; CI additionally runs `-race`. Write table-driven unit tests inside each package and HTTP-level tests in `internal/web` using the fake Graph backend helpers (`newTestServerOpts`, `graphHandler`). Cover Graph error responses (4xx/5xx and network failures) as well as success cases. Regression tests exist for the Python-version bugs fixed by this rewrite (delete-user ordering, silent license failures, group principals in role filters, pagination consistency, CSRF, open redirect, OData injection) — keep them passing and extend the pattern for new fixes. Never make network calls from tests.
 
 ## Commit & Pull Request Guidelines
 
-History uses short imperative subjects such as `Fix TypeError in /users endpoint when Graph API returns errors`; no conventional prefix is established. Describe the concrete change. PRs should explain the problem, affected flows, and validation performed, link relevant issues, and include screenshots for UI changes.
+History uses short imperative subjects such as `Add user summary, count-based pagination, role filter and detail views`. Describe the concrete change. PRs should explain the problem, affected flows, and validation performed (`go test ./...` output), and include screenshots for UI changes.
 
 ## Security & Configuration
 
-Never commit `config.json`, tenant secrets, or tokens. Set `FLASK_SECRET_KEY` and change the initial login password before deployment. Compose persists `CONFIG_FILE=/app/data/config.json` through `./data`; plain Docker defaults to `/app/config.json`. Exclude credentials and personal tenant data from logs and screenshots.
+Never commit `config.json`, `.env`, `data/`, tenant secrets, or tokens. `SESSION_SECRET` must be set in production (the server refuses to start otherwise). Default login password is `admin` — the dashboard warns until changed. Destructive actions must remain POST + confirmation pages behind CSRF. Logs must not contain tokens, secrets, or full response bodies — record resource category, method, status, and duration only.

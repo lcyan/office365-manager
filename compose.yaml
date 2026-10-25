@@ -5,7 +5,7 @@ services:
     ports:
       - "5000:5000"
     environment:
-      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:?Set FLASK_SECRET_KEY in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?请在 .env 中设置 SESSION_SECRET}
       CONFIG_FILE: /app/data/config.json
     volumes:
       - ./data:/app/data
