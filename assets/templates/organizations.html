@@ -1,0 +1,86 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">组织管理</h1>
+    <div class="flex gap-2">
+        <a href="/organizations/test_all" class="btn btn-outline btn-sm">测试全部 API</a>
+        <a href="/organizations/template" class="btn btn-outline btn-sm">下载导入模板</a>
+    </div>
+</div>
+
+<div class="table-wrap mb-4">
+    <table class="table">
+        <thead>
+            <tr>
+                <th>组织名称</th>
+                <th>客户端 ID</th>
+                <th>API 状态</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{$csrf := .CSRFToken}}
+            {{range .Orgs}}
+            <tr>
+                <td>{{.Name}}</td>
+                <td class="code">{{.ClientID}}</td>
+                <td>
+                    {{if eq .Status "ok"}}<span class="badge badge-success">可用</span>
+                    {{else if eq .Status "fail"}}<span class="badge badge-destructive">不可用</span>
+                    {{else}}<span class="text-muted">未测试</span>{{end}}
+                </td>
+                <td>
+                    <div class="flex gap-2">
+                        <a href="/select_org/{{.ID}}?next=/users" class="btn btn-primary btn-sm">管理</a>
+                        <a href="/organizations/edit/{{.ID}}" class="btn btn-outline btn-sm">编辑</a>
+                        <a href="/organizations/test/{{.ID}}" class="btn btn-outline btn-sm">测试 API</a>
+                        <a href="/organizations/delete/{{.ID}}" class="btn btn-destructive btn-sm">删除</a>
+                    </div>
+                </td>
+            </tr>
+            {{else}}
+            <tr><td colspan="4" class="table-empty">暂无组织，请在下方添加。</td></tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+
+<h2 class="section-title">添加组织</h2>
+<div class="card mb-4">
+    <div class="card-content">
+        <form method="post" action="/organizations" class="form-narrow">
+            <input type="hidden" name="csrf_token" value="{{$csrf}}">
+            <div class="field">
+                <label class="label" for="name">组织名称</label>
+                <input class="input" type="text" id="name" name="name" required>
+            </div>
+            <div class="field">
+                <label class="label" for="client_id">应用程序（客户端）ID</label>
+                <input class="input" type="text" id="client_id" name="client_id" required>
+            </div>
+            <div class="field">
+                <label class="label" for="tenant_id">目录（租户）ID</label>
+                <input class="input" type="text" id="tenant_id" name="tenant_id" required>
+            </div>
+            <div class="field">
+                <label class="label" for="client_secret">值（客户端密钥）</label>
+                <input class="input" type="password" id="client_secret" name="client_secret" required>
+            </div>
+            <button type="submit" class="btn btn-primary">保存</button>
+        </form>
+    </div>
+</div>
+
+<h2 class="section-title">批量导入组织</h2>
+<div class="card">
+    <div class="card-content">
+        <p class="text-muted mb-3">请先<a href="/organizations/template">下载模板</a>，按列填写组织信息后上传。文件必须为 UTF-8 编码；全部行校验通过才会写入。</p>
+        <form method="post" action="/organizations/import" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="{{$csrf}}">
+            <div class="flex gap-2">
+                <input class="input" type="file" name="file" accept=".csv" required>
+                <button type="submit" class="btn btn-primary">上传并导入</button>
+            </div>
+        </form>
+    </div>
+</div>
+{{end}}

@@ -1,0 +1,33 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">编辑组织</h1>
+</div>
+<div class="card form-narrow">
+    <div class="card-content">
+        <form method="post" action="/organizations/edit/{{.Org.ID}}">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="field">
+                <label class="label" for="name">组织名称</label>
+                <input class="input" type="text" id="name" name="name" value="{{.Org.Name}}" required>
+            </div>
+            <div class="field">
+                <label class="label" for="client_id">应用程序（客户端）ID</label>
+                <input class="input" type="text" id="client_id" name="client_id" value="{{.Org.ClientID}}" required>
+            </div>
+            <div class="field">
+                <label class="label" for="tenant_id">目录（租户）ID</label>
+                <input class="input" type="text" id="tenant_id" name="tenant_id" value="{{.Org.TenantID}}" required>
+            </div>
+            <div class="field">
+                <label class="label" for="client_secret">值（客户端密钥）</label>
+                <input class="input" type="password" id="client_secret" name="client_secret"
+                       placeholder="留空则保持现有密钥不变">
+            </div>
+            <div class="flex gap-2">
+                <button type="submit" class="btn btn-primary">保存</button>
+                <a href="/organizations" class="btn btn-outline">取消</a>
+            </div>
+        </form>
+    </div>
+</div>
+{{end}}

@@ -1,0 +1,42 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">仪表盘</h1>
+</div>
+
+{{if .IsDefaultPassword}}
+<div class="alert alert-destructive">
+    当前系统仍使用默认密码（admin）。为保障安全，请立即前往“修改密码”页面更新登录密码！
+</div>
+{{end}}
+
+{{if eq .Total 0}}
+<div class="card">
+    <div class="card-content">
+        <p class="text-muted">尚未添加组织。请先在“组织管理”页面添加至少一个组织以开始管理。</p>
+        <a href="/organizations" class="btn btn-primary">前往组织管理</a>
+    </div>
+</div>
+{{else}}
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-label">已添加组织</div>
+        <div class="stat-value">{{.Total}}</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-label">API 可用</div>
+        <div class="stat-value">{{.Available}}</div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-label">API 不可用</div>
+        <div class="stat-value">{{.Unavailable}}</div>
+        <div class="stat-hint">未检测：{{.Untested}}</div>
+    </div>
+</div>
+<div class="flex flex-wrap gap-2">
+    <a href="/organizations/test_all" class="btn btn-primary">检测所有 API</a>
+    <a href="/organizations" class="btn btn-outline">管理组织</a>
+    <a href="/users" class="btn btn-outline">用户管理</a>
+    <a href="/set_password" class="btn btn-outline">修改密码</a>
+</div>
+{{end}}
+{{end}}

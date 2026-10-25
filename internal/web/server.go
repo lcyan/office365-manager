@@ -7,15 +7,18 @@ import (
 
 	"github.com/lcyan/office365-manager/internal/auth"
 	"github.com/lcyan/office365-manager/internal/config"
+	"github.com/lcyan/office365-manager/internal/graph"
 )
 
 // Server 聚合全部依赖并装配路由。
 type Server struct {
-	store    *config.Store
-	sessions *SessionManager
-	limiter  *auth.Limiter
-	log      *slog.Logger
-	render   *Renderer
+	store     *config.Store
+	sessions  *SessionManager
+	limiter   *auth.Limiter
+	log       *slog.Logger
+	render    *Renderer
+	graph     *graph.Client
+	apiStatus *orgStatus
 }
 
 // Deps 是构造 Server 的依赖集合。
@@ -24,6 +27,7 @@ type Deps struct {
 	Sessions *SessionManager
 	Limiter  *auth.Limiter
 	Log      *slog.Logger
+	Graph    *graph.Client
 }
 
 // New 构造 Server（渲染器从内嵌资源加载模板）。
@@ -37,11 +41,13 @@ func New(d Deps) (*Server, error) {
 		log = slog.Default()
 	}
 	return &Server{
-		store:    d.Store,
-		sessions: d.Sessions,
-		limiter:  d.Limiter,
-		log:      log,
-		render:   renderer,
+		store:     d.Store,
+		sessions:  d.Sessions,
+		limiter:   d.Limiter,
+		log:       log,
+		render:    renderer,
+		graph:     d.Graph,
+		apiStatus: newOrgStatus(),
 	}, nil
 }
 
@@ -64,6 +70,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /logout", s.requireAuth(s.csrf(s.handleLogoutPOST)))
 	mux.HandleFunc("GET /set_password", s.requireAuth(s.handleSetPasswordGET))
 	mux.HandleFunc("POST /set_password", s.requireAuth(s.csrf(s.handleSetPasswordPOST)))
+
+	mux.HandleFunc("GET /dashboard", s.requireAuth(s.handleDashboard))
+	mux.HandleFunc("GET /organizations", s.requireAuth(s.handleOrgsList))
+	mux.HandleFunc("POST /organizations", s.requireAuth(s.csrf(s.handleOrgAdd)))
+	mux.HandleFunc("GET /organizations/edit/{id}", s.requireAuth(s.handleOrgEditGET))
+	mux.HandleFunc("POST /organizations/edit/{id}", s.requireAuth(s.csrf(s.handleOrgEditPOST)))
+	mux.HandleFunc("GET /organizations/delete/{id}", s.requireAuth(s.handleOrgDeleteGET))
+	mux.HandleFunc("POST /organizations/delete/{id}", s.requireAuth(s.csrf(s.handleOrgDeletePOST)))
+	mux.HandleFunc("GET /organizations/test/{id}", s.requireAuth(s.handleOrgTest))
+	mux.HandleFunc("GET /organizations/test_all", s.requireAuth(s.handleOrgTestAll))
+	mux.HandleFunc("GET /organizations/template", s.requireAuth(s.handleOrgTemplate))
+	mux.HandleFunc("POST /organizations/import", s.requireAuth(s.csrf(s.handleOrgImport)))
+	mux.HandleFunc("GET /select_org/{id}", s.requireAuth(s.handleSelectOrg))
 
 	mux.HandleFunc("/", s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)

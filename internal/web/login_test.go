@@ -1,64 +1,18 @@
 package web
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/lcyan/office365-manager/internal/auth"
-	"github.com/lcyan/office365-manager/internal/config"
 )
-
-// newTestServer 构造带独立配置与会话的测试服务器。
-// limiterCapacity <=0 时使用大容量（限速不干扰普通用例）。
-func newTestServer(t *testing.T, password string, legacyHash bool, limiterCapacity int) (*httptest.Server, *config.Store) {
-	t.Helper()
-	store, err := config.Load(filepath.Join(t.TempDir(), "config.json"), "unused")
-	if err != nil {
-		t.Fatalf("config.Load: %v", err)
-	}
-	var hash string
-	if legacyHash {
-		digest := sha256.Sum256([]byte(password))
-		hash = hex.EncodeToString(digest[:])
-	} else {
-		hash, err = auth.HashPassword(password)
-		if err != nil {
-			t.Fatalf("HashPassword: %v", err)
-		}
-	}
-	if err := store.SetPasswordHash(hash); err != nil {
-		t.Fatalf("SetPasswordHash: %v", err)
-	}
-
-	sessions := NewSessionManager([]byte("test-secret-0123456789abcdef"), false)
-	if limiterCapacity <= 0 {
-		limiterCapacity = 1000
-	}
-	server, err := New(Deps{
-		Store:    store,
-		Sessions: sessions,
-		Limiter:  auth.NewLimiter(limiterCapacity, time.Hour), // 慢恢复：限速用例不受时间影响
-		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	ts := httptest.NewServer(server.Handler())
-	t.Cleanup(ts.Close)
-	return ts, store
-}
 
 var csrfRe = regexp.MustCompile(`name="csrf_token" value="([0-9a-f]+)"`)
 
