@@ -72,49 +72,46 @@ func userFlowGraph(subscriptionsFail *bool, graphCalls *int32) graphHandler {
 			}
 			writeGraphJSON(w, 200, map[string]any{"value": []any{}})
 			return true
+		case r.URL.Path == "/users/$count":
+			// 专用计数端点：纯文本数字（搜索过滤时为 0）。
+			count := len(buildFakeUsers())
+			if strings.Contains(q.Get("$filter"), "alice") {
+				count = 0
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte(fmt.Sprint(count)))
+			return true
 		case r.URL.Path == "/users" && q.Get("$count") == "true":
-			top := q.Get("$top")
+			// Graph /users 不支持 $skip：游标（$skiptoken）分页。
+			if q.Get("$skip") != "" {
+				panic("fake Graph: $skip must not be sent: " + q.Encode())
+			}
 			if strings.Contains(q.Get("$filter"), "alice") {
 				writeGraphJSON(w, 200, map[string]any{"value": []any{}, "@odata.count": 0})
 				return true
 			}
-			// 共 25 个用户：第 1 页（10 条）Alice/Bob…，末页（第 3 页）以 Zed 结尾。
-			if strings.Contains(q.Get("$filter"), "alice") {
-				writeGraphJSON(w, 200, map[string]any{"value": []any{}, "@odata.count": 0})
-				return true
+			all := buildFakeUsers()
+			start := 0
+			if s := q.Get("$skiptoken"); s != "" {
+				fmt.Sscanf(s, "%d", &start)
 			}
-			all := []any{
-				map[string]any{"id": userID, "displayName": "Alice", "userPrincipalName": "alice@x.com", "surname": "Green", "givenName": "Alice"},
-				map[string]any{"id": userID2, "displayName": "Bob", "userPrincipalName": "bob@x.com", "surname": "Blue", "givenName": "Bob"},
-				map[string]any{"id": "dddddddd-dddd-dddd-dddd-dddddddddddd", "displayName": "Carol", "userPrincipalName": "carol@x.com"},
+			pageSize := 50
+			if n := 0; q.Get("$top") != "" {
+				fmt.Sscanf(q.Get("$top"), "%d", &n)
+				if n > 0 {
+					pageSize = n
+				}
 			}
-			for i := 3; i < 24; i++ {
-				all = append(all, map[string]any{
-					"id":                fmt.Sprintf("00000000-0000-0000-0000-%012d", i),
-					"displayName":       fmt.Sprintf("User%02d", i),
-					"userPrincipalName": fmt.Sprintf("user%02d@x.com", i),
-				})
-			}
-			all = append(all, map[string]any{
-				"id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", "displayName": "Zed",
-				"userPrincipalName": "zed@x.com",
-			})
-			skip := 0
-			fmt.Sscanf(q.Get("$skip"), "%d", &skip)
-			end := skip + 50
-			if top != "" {
-				var n int
-				fmt.Sscanf(top, "%d", &n)
-				end = skip + n
-			}
+			end := start + pageSize
 			if end > len(all) {
 				end = len(all)
 			}
-			if skip >= len(all) {
-				writeGraphJSON(w, 200, map[string]any{"value": []any{}, "@odata.count": len(all)})
-				return true
+			resp := map[string]any{"value": all[start:end], "@odata.count": len(all)}
+			if end < len(all) {
+				resp["@odata.nextLink"] = fmt.Sprintf(
+					"http://%s/users?$count=true&$top=%d&$skiptoken=%d", r.Host, pageSize, end)
 			}
-			writeGraphJSON(w, 200, map[string]any{"value": all[skip:end], "@odata.count": len(all)})
+			writeGraphJSON(w, 200, resp)
 			return true
 		case r.URL.Path == "/users/"+userID:
 			writeGraphJSON(w, 200, map[string]any{"id": userID, "displayName": "Alice",
@@ -297,4 +294,25 @@ func TestUserDetailRendersAndWarns(t *testing.T) {
 	if resp2.Header.Get("Location") != "/organizations" {
 		t.Errorf("no-org redirect = %q, want /organizations", resp2.Header.Get("Location"))
 	}
+}
+
+// buildFakeUsers 构造 25 个伪用户：第 1 页（10 条）Alice/Bob…，末页以 Zed 结尾。
+func buildFakeUsers() []any {
+	all := []any{
+		map[string]any{"id": userID, "displayName": "Alice", "userPrincipalName": "alice@x.com", "surname": "Green", "givenName": "Alice"},
+		map[string]any{"id": userID2, "displayName": "Bob", "userPrincipalName": "bob@x.com", "surname": "Blue", "givenName": "Bob"},
+		map[string]any{"id": "dddddddd-dddd-dddd-dddd-dddddddddddd", "displayName": "Carol", "userPrincipalName": "carol@x.com"},
+	}
+	for i := 3; i < 24; i++ {
+		all = append(all, map[string]any{
+			"id":                fmt.Sprintf("00000000-0000-0000-0000-%012d", i),
+			"displayName":       fmt.Sprintf("User%02d", i),
+			"userPrincipalName": fmt.Sprintf("user%02d@x.com", i),
+		})
+	}
+	all = append(all, map[string]any{
+		"id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", "displayName": "Zed",
+		"userPrincipalName": "zed@x.com",
+	})
+	return all
 }

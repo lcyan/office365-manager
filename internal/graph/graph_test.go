@@ -183,32 +183,85 @@ func TestTokenFailureCarriesAADSTS(t *testing.T) {
 	}
 }
 
-func TestListUsersPaginationAndCount(t *testing.T) {
-	fg, client := newFakeGraph(t, func(w http.ResponseWriter, r *http.Request) bool {
-		if r.URL.Path != "/users" {
-			return false
+func TestListUsersNoSkipAndCursor(t *testing.T) {
+	// Graph /users 明确拒绝 $skip（真实 API 返回 Request_BadRequest），
+	// 首页请求只能携带 $count/$top/$select + ConsistencyLevel。
+	first := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/token"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok", "expires_in": 3600})
+		case req.URL.Path == "/users":
+			q := req.URL.Query()
+			if q.Get("$skip") != "" {
+				t.Errorf("$skip must never be sent: %s", q)
+			}
+			if q.Get("$count") != "true" || q.Get("$top") != "2" {
+				t.Errorf("first page query wrong: %s", q)
+			}
+			if req.Header.Get("ConsistencyLevel") != "eventual" {
+				t.Error("missing ConsistencyLevel header")
+			}
+			if first {
+				first = false
+				next := "http://" + req.Host + "/users?$count=true&$top=2&$skiptoken=2"
+				_, _ = fmt.Fprintf(w, `{"value":[{"id":%q,"displayName":"A"}],"@odata.count":3,"@odata.nextLink":%q}`, testUserA, next)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"value":[{"id":%q,"displayName":"B"}],"@odata.count":3}`, testUserB)
+		default:
+			t.Errorf("unexpected path %s", req.URL.Path)
 		}
-		q := r.URL.Query()
-		if q.Get("$count") != "true" || q.Get("$top") != "50" || q.Get("$skip") != "50" {
-			t.Errorf("query = %s", q)
-		}
-		if r.Header.Get("ConsistencyLevel") != "eventual" {
-			t.Error("missing ConsistencyLevel header")
-		}
-		writeJSON(t, w, 200, map[string]any{
-			"value":        []map[string]any{{"id": testUserB, "displayName": "B"}},
-			"@odata.count": 120,
-		})
-		return true
-	})
-	result, err := client.ListUsers(context.Background(), testOrg(), ListUsersParams{Top: 50, Skip: 50})
+	}))
+	defer server.Close()
+	client := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	client.SetHTTPClient(server.Client())
+	client.SetBaseURL(server.URL, server.URL)
+
+	ctx := context.Background()
+	result, err := client.ListUsers(ctx, testOrg(), ListUsersParams{Top: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Total != 120 || len(result.Users) != 1 || result.Users[0].ID != testUserB {
-		t.Errorf("result = %+v", result)
+	if result.Total != 3 || len(result.Users) != 1 || result.NextLink == "" {
+		t.Fatalf("first page = %+v", result)
 	}
-	_ = fg
+	second, err := client.ListUsers(ctx, testOrg(), ListUsersParams{NextLink: result.NextLink})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Users[0].ID != testUserB || second.Total != 3 || second.NextLink != "" {
+		t.Fatalf("second page = %+v", second)
+	}
+}
+
+func TestCountUsersEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case strings.HasSuffix(req.URL.Path, "/token"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok", "expires_in": 3600})
+		case req.URL.Path == "/users/$count":
+			if req.Header.Get("ConsistencyLevel") != "eventual" {
+				t.Error("missing ConsistencyLevel header")
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("12345\n"))
+		default:
+			t.Errorf("unexpected path %s", req.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	client.SetHTTPClient(server.Client())
+	client.SetBaseURL(server.URL, server.URL)
+
+	n, err := client.CountUsers(context.Background(), testOrg(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 12345 {
+		t.Errorf("count = %d, want 12345", n)
+	}
 }
 
 func TestListUsersSearchFilterEscaped(t *testing.T) {

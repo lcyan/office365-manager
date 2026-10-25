@@ -7,47 +7,102 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/lcyan/office365-manager/internal/config"
 )
 
 const userSelect = "id,displayName,userPrincipalName,mail,givenName,surname"
 
-// ListUsersResult 是一次分页用户查询的结果。Total 来自同一响应的
-// @odata.count，与当前页数据始终一致。
+// ListUsersResult 是一次用户页查询结果。Total 来自同一响应的
+// @odata.count，与当前页数据同源；NextLink 用于获取后续页
+// （Graph /users 不支持 $skip，只能顺序跟随游标）。
 type ListUsersResult struct {
-	Users []User
-	Total int
+	Users    []User
+	Total    int
+	NextLink string
 }
 
-// ListUsersParams 控制用户列表查询。
+// ListUsersParams 控制用户页查询：NextLink 为空时按 Search/Top 请求首页，
+// 否则直接跟随上一页返回的游标。
 type ListUsersParams struct {
-	Search string // 可选；按显示名/UPN/名/姓前缀匹配
-	Top    int    // 页大小
-	Skip   int    // 偏移
+	Search   string
+	Top      int
+	NextLink string
 }
 
-// ListUsers 以 $count + $top/$skip 方式直达分页（ConsistencyLevel: eventual）。
+// ListUsers 获取一页用户（ConsistencyLevel: eventual，携带 $count）。
 func (c *Client) ListUsers(ctx context.Context, org config.Org, p ListUsersParams) (ListUsersResult, error) {
+	if p.NextLink != "" {
+		return c.listUsersAt(ctx, org, p.NextLink)
+	}
 	params := url.Values{
 		"$select": {userSelect},
 		"$top":    {fmt.Sprint(p.Top)},
-		"$skip":   {fmt.Sprint(p.Skip)},
 		"$count":  {"true"},
 	}
 	if p.Search != "" {
 		params.Set("$filter", userSearchFilter(p.Search))
 	}
-	users, total, err := getCollection[User](ctx, c, org, "/users", params,
-		map[string]string{"ConsistencyLevel": "eventual"}, false)
+	return c.fetchUsersPage(ctx, org, "/users", params)
+}
+
+// listUsersAt 跟随 nextLink 游标获取后续页。
+func (c *Client) listUsersAt(ctx context.Context, org config.Org, nextLink string) (ListUsersResult, error) {
+	trimmed, ok := stripBase(c.graphBase, nextLink)
+	if !ok {
+		return ListUsersResult{}, fmt.Errorf("nextLink 指向意外的地址")
+	}
+	path, query, _ := strings.Cut(trimmed, "?")
+	params, err := url.ParseQuery(query)
+	if err != nil {
+		return ListUsersResult{}, fmt.Errorf("解析 nextLink 失败：%w", err)
+	}
+	return c.fetchUsersPage(ctx, org, path, params)
+}
+
+func (c *Client) fetchUsersPage(ctx context.Context, org config.Org, endpoint string, params url.Values) (ListUsersResult, error) {
+	body, err := c.do(ctx, org, request{
+		method:   http.MethodGet,
+		endpoint: endpoint,
+		params:   params,
+		headers:  map[string]string{"ConsistencyLevel": "eventual"},
+	})
 	if err != nil {
 		return ListUsersResult{}, err
 	}
-	result := ListUsersResult{Users: users, Total: 0}
-	if total != nil {
-		result.Total = *total
+	var page envelope[User]
+	if err := json.Unmarshal(body, &page); err != nil {
+		return ListUsersResult{}, fmt.Errorf("解析用户页响应失败：%w", err)
+	}
+	result := ListUsersResult{Users: page.Value, NextLink: page.NextLink}
+	if page.Count != nil {
+		result.Total = *page.Count
 	}
 	return result, nil
+}
+
+// CountUsers 返回（可选搜索过滤下的）用户总数，走 /users/$count 端点。
+func (c *Client) CountUsers(ctx context.Context, org config.Org, search string) (int, error) {
+	params := url.Values{}
+	if search != "" {
+		params.Set("$filter", userSearchFilter(search))
+	}
+	body, err := c.do(ctx, org, request{
+		method:   http.MethodGet,
+		endpoint: "/users/$count",
+		params:   params,
+		headers:  map[string]string{"ConsistencyLevel": "eventual"},
+	})
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(body)))
+	if err != nil {
+		return 0, fmt.Errorf("解析用户总数失败：%w", err)
+	}
+	return n, nil
 }
 
 // GetUser 按 ID 获取单个用户（detail=true 时附带账户状态等字段）。

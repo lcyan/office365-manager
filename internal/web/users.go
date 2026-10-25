@@ -225,14 +225,15 @@ func (s *Server) buildSummary(r *http.Request, org config.Org) (orgSummary, bool
 	}()
 
 	var (
-		countResult graph.ListUsersResult
-		countErr    error
+		totalUsersCount int
+		countErr        error
 	)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Top=1 仅取计数。
-		countResult, countErr = s.graph.ListUsers(ctx, org, graph.ListUsersParams{Top: 1})
+		// 用户总数走专用 $count 端点（/users 不支持 $skip，
+		// 分页与计数是两条路径）。
+		totalUsersCount, countErr = s.graph.CountUsers(ctx, org, "")
 		if countErr != nil {
 			fail()
 		}
@@ -286,10 +287,8 @@ func (s *Server) buildSummary(r *http.Request, org config.Org) (orgSummary, bool
 
 	var totalUsers *int
 	if countErr == nil {
-		n := countResult.Total
-		totalUsers = &n
+		totalUsers = &totalUsersCount
 	}
-
 	summary := orgSummary{
 		GlobalAdminCount:     gaCount,
 		PrivilegedAdminCount: praCount,
@@ -364,29 +363,33 @@ func (s *Server) usersListViewHandler(w http.ResponseWriter, r *http.Request, or
 			}
 		}
 	} else {
+		// Graph /users 不支持 $skip：按 nextLink 游标链顺序取到第 page 页。
 		result, err := s.graph.ListUsers(r.Context(), org, graph.ListUsersParams{
-			Search: search, Top: pageSize, Skip: (page - 1) * pageSize,
+			Search: search, Top: pageSize,
 		})
 		if err != nil {
 			s.renderOrgError(w, r, org, err)
 			return
 		}
-		totalPages = int(math.Max(1, math.Ceil(float64(result.Total)/float64(pageSize))))
-		// 请求页超出总数（深链/数据变化）→ 回退到末页重取，保证页码与内容一致。
-		if len(result.Users) == 0 && page > 1 && result.Total > 0 {
-			page = totalPages
-			result, err = s.graph.ListUsers(r.Context(), org, graph.ListUsersParams{
-				Search: search, Top: pageSize, Skip: (page - 1) * pageSize,
-			})
+		pages := [][]graph.User{result.Users}
+		next := result.NextLink
+		for len(pages) < page && next != "" {
+			result, err = s.graph.ListUsers(r.Context(), org, graph.ListUsersParams{NextLink: next})
 			if err != nil {
 				s.renderOrgError(w, r, org, err)
 				return
 			}
+			pages = append(pages, result.Users)
+			next = result.NextLink
 		}
+		totalPages = int(math.Max(1, math.Ceil(float64(result.Total)/float64(pageSize))))
 		if page > totalPages {
 			page = totalPages
 		}
-		for _, u := range result.Users {
+		if page > len(pages) {
+			page = len(pages) // 游标链提前结束（数据已变化）：回退到已取到的末页
+		}
+		for _, u := range pages[page-1] {
 			rows = append(rows, userRow{
 				ID: u.ID, DisplayName: u.DisplayName, Surname: u.Surname,
 				GivenName: u.GivenName, UPN: u.UserPrincipalName, Kind: "user",

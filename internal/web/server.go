@@ -2,9 +2,13 @@
 package web
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"io/fs"
 	"log/slog"
 	"net/http"
 
+	"github.com/lcyan/office365-manager/assets"
 	"github.com/lcyan/office365-manager/internal/auth"
 	"github.com/lcyan/office365-manager/internal/background"
 	"github.com/lcyan/office365-manager/internal/config"
@@ -14,16 +18,17 @@ import (
 
 // Server 聚合全部依赖并装配路由。
 type Server struct {
-	store      *config.Store
-	sessions   *SessionManager
-	limiter    *auth.Limiter
-	log        *slog.Logger
-	render     *Renderer
-	graph      *graph.Client
-	apiStatus  *orgStatus
-	catalog    *licenses.Catalog
-	summaries  *summaryCache
-	background *background.Runner
+	store        *config.Store
+	sessions     *SessionManager
+	limiter      *auth.Limiter
+	log          *slog.Logger
+	render       *Renderer
+	graph        *graph.Client
+	apiStatus    *orgStatus
+	catalog      *licenses.Catalog
+	summaries    *summaryCache
+	background   *background.Runner
+	assetVersion string // 静态资源内容指纹，用于缓存击穿
 }
 
 // Deps 是构造 Server 的依赖集合。
@@ -56,17 +61,29 @@ func New(d Deps) (*Server, error) {
 		runner = background.New(log)
 	}
 	return &Server{
-		store:      d.Store,
-		sessions:   d.Sessions,
-		limiter:    d.Limiter,
-		log:        log,
-		render:     renderer,
-		graph:      d.Graph,
-		apiStatus:  newOrgStatus(),
-		catalog:    catalog,
-		summaries:  newSummaryCache(),
-		background: runner,
+		store:        d.Store,
+		sessions:     d.Sessions,
+		limiter:      d.Limiter,
+		log:          log,
+		render:       renderer,
+		graph:        d.Graph,
+		apiStatus:    newOrgStatus(),
+		catalog:      catalog,
+		summaries:    newSummaryCache(),
+		background:   runner,
+		assetVersion: computeAssetVersion(),
 	}, nil
+}
+
+// computeAssetVersion 以静态资源内容哈希作为缓存版本号：
+// 内容一变 URL 就变，浏览器/代理不会再拿旧样式。
+func computeAssetVersion() string {
+	raw, err := fs.ReadFile(assets.Static, "static/style.css")
+	if err != nil {
+		return "0"
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:8])
 }
 
 // Handler 返回装配好中间件的完整 HTTP 处理器。
@@ -79,7 +96,8 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	static := http.FileServer(http.FS(s.staticFiles()))
-	mux.Handle("GET /static/", http.StripPrefix("/static/", static))
+	mux.Handle("GET /static/", http.StripPrefix("/static/",
+		cacheStatic(static)))
 
 	// 登录与静态资源无需会话；其余全部要求登录（包括未知路径，
 	// 未登录时统一重定向，避免暴露路径存在性）。
@@ -144,6 +162,14 @@ func (s *Server) csrf(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// cacheStatic 为静态资源设置一周缓存（URL 带内容指纹，版本变更即换址）。
+func cacheStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=604800")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // secureHeaders 设置基础安全响应头。站内无脚本与内联样式，CSP 收紧。

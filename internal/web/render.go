@@ -84,16 +84,18 @@ type View struct {
 	ActiveOrgID   string
 	ActiveOrgName string
 	OrgSwitcher   []OrgLink
+	AssetVersion  string
 }
 
 // viewData 组装公共视图数据：闪现消息、CSRF 令牌与当前组织。
 // 必须在 handler 追加新闪存消息之前调用（先取后加）。
 func (s *Server) viewData(r *http.Request, title string) View {
 	v := View{
-		Title:     title,
-		LoggedIn:  s.isLoggedIn(r),
-		CSRFToken: s.csrfToken(r),
-		Flashes:   s.takeFlashes(r),
+		Title:        title,
+		LoggedIn:     s.isLoggedIn(r),
+		CSRFToken:    s.csrfToken(r),
+		Flashes:      s.takeFlashes(r),
+		AssetVersion: s.assetVersion,
 	}
 	if orgID := s.activeOrgID(r); orgID != "" {
 		if org, ok := s.store.Org(orgID); ok {
