@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -13,11 +14,11 @@ import (
 func TestEndToEndJourney(t *testing.T) {
 	fail := false
 	g := &actionGraph{}
-	graphCalls := 0
+	var graphCalls atomic.Int32
 	ts, store, _ := newTestServerOpts(t, serverOpts{
 		password: "secret-pass",
 		graph: func(w http.ResponseWriter, r *http.Request) bool {
-			graphCalls++
+			graphCalls.Add(1) // 概况页会并行发请求，必须原子计数
 			// 用户/概况读取走 userFlowGraph；写操作与角色分配走 actionGraph。
 			readOnlyList := r.URL.Path == "/users" && r.Method == "GET"
 			if !readOnlyList && g.handler()(w, r) {
@@ -119,7 +120,7 @@ func TestEndToEndJourney(t *testing.T) {
 		t.Fatalf("after logout dashboard redirects to %q", resp2.Header.Get("Location"))
 	}
 
-	if graphCalls < 10 {
-		t.Logf("warning: journey made only %d graph calls", graphCalls)
+	if graphCalls.Load() < 10 {
+		t.Logf("warning: journey made only %d graph calls", graphCalls.Load())
 	}
 }

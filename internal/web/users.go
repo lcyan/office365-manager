@@ -202,24 +202,26 @@ func (s *Server) buildSummary(r *http.Request, org config.Org) (orgSummary, bool
 
 	var (
 		gaID, praID string
-		roleIDErr   error
 	)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		gaID, roleIDErr = s.graph.RoleDefinitionID(ctx, org, roleGlobalAdmin)
-		if roleIDErr != nil {
+		id, err := s.graph.RoleDefinitionID(ctx, org, roleGlobalAdmin)
+		if err != nil {
 			fail()
 			return
 		}
+		gaID = id
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		praID, roleIDErr = s.graph.RoleDefinitionID(ctx, org, rolePrivilegedAdmin)
-		if roleIDErr != nil {
+		id, err := s.graph.RoleDefinitionID(ctx, org, rolePrivilegedAdmin)
+		if err != nil {
 			fail()
+			return
 		}
+		praID = id
 	}()
 
 	var (
