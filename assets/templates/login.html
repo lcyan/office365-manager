@@ -1,0 +1,15 @@
+{{define "content"}}
+<div class="card form-narrow center-card">
+    <div class="card-header"><h1 class="card-title">登录</h1></div>
+    <div class="card-content">
+        <form method="post" action="/login">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="field">
+                <label class="label" for="password">密码</label>
+                <input class="input" type="password" id="password" name="password" required autofocus>
+            </div>
+            <button type="submit" class="btn btn-primary w-full">登录</button>
+        </form>
+    </div>
+</div>
+{{end}}

@@ -1,0 +1,49 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} · Office365 管理</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="navbar">
+    <div class="navbar-inner">
+        <a class="brand" href="/dashboard">Office365 管理</a>
+        {{if .LoggedIn}}
+        <nav class="nav-links">
+            <a href="/dashboard">仪表盘</a>
+            <a href="/organizations">组织管理</a>
+            <a href="/users">用户管理</a>
+            <a href="/set_password">修改密码</a>
+        </nav>
+        <div class="nav-extra">
+            {{if .ActiveOrgID}}
+                {{if gt (len .OrgSwitcher) 0}}
+                <details class="org-switcher">
+                    <summary>当前组织：{{.ActiveOrgName}}</summary>
+                    <div class="dropdown-menu">
+                        {{range .OrgSwitcher}}<a href="/select_org/{{.ID}}">{{.Name}}</a>{{end}}
+                    </div>
+                </details>
+                {{else}}
+                <span class="current-org">当前组织：<strong>{{.ActiveOrgName}}</strong></span>
+                {{end}}
+            {{end}}
+            <form method="post" action="/logout">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <button type="submit" class="btn btn-ghost btn-sm">退出</button>
+            </form>
+        </div>
+        {{end}}
+    </div>
+</header>
+<main class="container">
+    {{range .Flashes}}<div class="alert alert-info">{{.}}</div>{{end}}
+    {{template "content" .}}
+</main>
+</body>
+</html>
+{{end}}
