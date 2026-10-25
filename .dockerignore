@@ -1,9 +1,10 @@
 *
 !Dockerfile
-!requirements.txt
-!app.py
-!sku_product_mapping.json
-!templates/
-!templates/**
-!static/
-!static/**
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!assets/
+!assets/**
