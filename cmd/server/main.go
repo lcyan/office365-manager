@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lcyan/office365-manager/assets"
@@ -23,7 +24,12 @@ import (
 func main() {
 	addr := flag.String("addr", envOr("ADDR", ":5000"), "HTTP 监听地址")
 	configFile := flag.String("config", envOr("CONFIG_FILE", "config.json"), "配置文件路径")
+	healthcheck := flag.Bool("healthcheck", false, "探测本实例 /healthz 后退出（供 Docker HEALTHCHECK 使用，镜像内无 shell/curl）")
 	flag.Parse()
+
+	if *healthcheck {
+		os.Exit(runHealthcheck(*addr))
+	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
@@ -96,6 +102,26 @@ func sessionSecret() (string, error) {
 		return hex.EncodeToString(buf), nil
 	}
 	return "", fmt.Errorf("未设置 SESSION_SECRET。请通过环境变量提供足够长的随机字符串（生产必须），或设置 DEV_MODE=1 用于本地开发")
+}
+
+// runHealthcheck 探测本实例的 /healthz；0 = 健康。
+func runHealthcheck(addr string) int {
+	host := addr
+	if strings.HasPrefix(host, ":") {
+		host = "127.0.0.1" + host
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + host + "/healthz")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "healthcheck:", err)
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, "healthcheck: status", resp.StatusCode)
+		return 1
+	}
+	return 0
 }
 
 func envOr(key, fallback string) string {

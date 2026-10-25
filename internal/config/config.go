@@ -237,10 +237,34 @@ func (s *Store) saveLocked() error {
 	// Windows 上杀软/索引器可能短暂锁定目标文件导致 rename 失败，
 	// 短重试后仍失败才放弃（Linux 上首次即成功）。
 	if err := renameWithRetry(tmpName, s.path); err != nil {
+		// 单文件 bind mount（如 docker -v config.json:/app/config.json）时，
+		// 目标是挂载点，rename 必然 EBUSY。退化为就地覆写：失去原子性但
+		// 功能可用；生产环境建议目录挂载以恢复原子写。
+		if fallbackErr := writeFileInPlace(s.path, raw); fallbackErr == nil {
+			_ = os.Remove(tmpName)
+			return nil
+		}
 		_ = removeWithRetry(tmpName)
 		return fmt.Errorf("替换配置文件失败：%w", err)
 	}
 	return nil
+}
+
+// writeFileInPlace 以截断方式覆写目标文件（rename 不可用时的回退路径）。
+func writeFileInPlace(path string, raw []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func renameWithRetry(oldPath, newPath string) error {

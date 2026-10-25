@@ -30,6 +30,27 @@ docker compose up -d
 Compose 将 `./data` 挂载到 `/app/data`，`CONFIG_FILE=/app/data/config.json`
 持久化配置与租户凭据。
 
+### 健康检查（可选）
+
+镜像是 distroless（无 shell/curl），Docker 健康检查请使用二进制自带的
+`-healthcheck` 旗标：
+
+```yaml
+    healthcheck:
+      test: ["CMD", "/app/office365-manager", "-healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+```
+
+### 挂载方式说明
+
+推荐**目录挂载**（如上 `./data:/app/data`）：配置写入为原子操作
+（临时文件 + rename）。如果沿用旧版的**单文件挂载**
+（`-v ./data/config.json:/app/config.json`），rename 到挂载点会失败，
+程序会自动退化为就地覆写（功能正常但失去原子性）。
+
 ### 环境变量
 
 | 变量 | 必填 | 说明 |

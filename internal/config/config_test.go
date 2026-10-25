@@ -209,6 +209,30 @@ func TestSaveLeavesNoTempFiles(t *testing.T) {
 	}
 }
 
+func TestWriteFileInPlaceOverwritesExisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte("old-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileInPlace(path, []byte("new-content")); err != nil {
+		t.Fatalf("writeFileInPlace: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new-content" {
+		t.Errorf("content = %q, want new-content", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("target is no longer a regular file: %v", info.Mode())
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s, err := Load(filepath.Join(t.TempDir(), "config.json"), testHash)
 	if err != nil {
