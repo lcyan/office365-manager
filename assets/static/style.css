@@ -53,6 +53,14 @@
   }
 }
 
+/* 全局盒模型重置：width:100% 的输入框/卡片必须把内边距与边框算进宽度，
+   否则会超出容器（shadcn/Tailwind 同款重置）。 */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 * {
   border-color: hsl(var(--border));
 }
