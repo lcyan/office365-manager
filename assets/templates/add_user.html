@@ -1,0 +1,84 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">添加新用户 · {{.OrgName}}</h1>
+    <a href="/users?view=users" class="btn btn-outline btn-sm">返回列表</a>
+</div>
+
+{{range .Warnings}}
+<div class="alert alert-warning">{{.}}</div>
+{{end}}
+
+<form method="post" action="/users/add">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="card form-narrow mb-4">
+        <div class="card-content">
+            <div class="field">
+                <label class="label" for="display_name">显示名称</label>
+                <input class="input" type="text" id="display_name" name="display_name" value="{{.FormName}}" required>
+            </div>
+            <div class="field">
+                <label class="label" for="local_part">用户名</label>
+                <input class="input" type="text" id="local_part" name="local_part" value="{{.FormLocal}}"
+                       placeholder="用户名，不含 @" required>
+            </div>
+            <div class="field">
+                <label class="label" for="domain">选择域名</label>
+                <select class="select" id="domain" name="domain" required>
+                    {{range .Domains}}
+                    <option value="{{.Name}}" {{if .IsDefault}}selected{{end}}>{{.Name}}</option>
+                    {{else}}
+                    <option value="">（无可用域名）</option>
+                    {{end}}
+                </select>
+            </div>
+            <div class="field">
+                <label class="label" for="role">管理员角色</label>
+                <select class="select" id="role" name="role">
+                    <option value="normal">普通用户</option>
+                    <option value="Global Administrator">全局管理员</option>
+                    <option value="Privileged Role Administrator">特权角色管理员</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <h2 class="section-title">分配订阅</h2>
+    <div class="table-wrap mb-3">
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>选择</th>
+                    <th>产品名称</th>
+                    <th>SKU 名称</th>
+                    <th>已分配/总数量</th>
+                    <th>可用数量</th>
+                    <th>订阅状态</th>
+                    <th>续订到期日期</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Skus}}
+                <tr>
+                    <td>
+                        <input type="checkbox" class="checkbox" name="sku_ids" value="{{.SkuID}}"
+                               {{if eq .Available 0}}disabled{{end}}>
+                    </td>
+                    <td>{{.ProductName}}</td>
+                    <td class="code">{{.SkuPart}}</td>
+                    <td>{{.Ratio}}</td>
+                    <td>{{.Available}}</td>
+                    <td><span class="badge {{.StatusBadge}}">{{.StatusLabel}}</span></td>
+                    <td>{{.Renewal}}</td>
+                </tr>
+                {{else}}
+                <tr><td colspan="7" class="table-empty">没有可用订阅。</td></tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    <div class="flex gap-2">
+        <button type="submit" class="btn btn-primary">创建用户</button>
+        <a href="/users?view=users" class="btn btn-outline">取消</a>
+    </div>
+</form>
+{{end}}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/lcyan/office365-manager/internal/auth"
+	"github.com/lcyan/office365-manager/internal/background"
 	"github.com/lcyan/office365-manager/internal/config"
 	"github.com/lcyan/office365-manager/internal/graph"
 	"github.com/lcyan/office365-manager/internal/licenses"
@@ -13,25 +14,27 @@ import (
 
 // Server 聚合全部依赖并装配路由。
 type Server struct {
-	store     *config.Store
-	sessions  *SessionManager
-	limiter   *auth.Limiter
-	log       *slog.Logger
-	render    *Renderer
-	graph     *graph.Client
-	apiStatus *orgStatus
-	catalog   *licenses.Catalog
-	summaries *summaryCache
+	store      *config.Store
+	sessions   *SessionManager
+	limiter    *auth.Limiter
+	log        *slog.Logger
+	render     *Renderer
+	graph      *graph.Client
+	apiStatus  *orgStatus
+	catalog    *licenses.Catalog
+	summaries  *summaryCache
+	background *background.Runner
 }
 
 // Deps 是构造 Server 的依赖集合。
 type Deps struct {
-	Store    *config.Store
-	Sessions *SessionManager
-	Limiter  *auth.Limiter
-	Log      *slog.Logger
-	Graph    *graph.Client
-	Catalog  *licenses.Catalog
+	Store      *config.Store
+	Sessions   *SessionManager
+	Limiter    *auth.Limiter
+	Log        *slog.Logger
+	Graph      *graph.Client
+	Catalog    *licenses.Catalog
+	Background *background.Runner
 }
 
 // New 构造 Server（渲染器从内嵌资源加载模板）。
@@ -48,16 +51,21 @@ func New(d Deps) (*Server, error) {
 	if catalog == nil {
 		catalog = licenses.NewCatalog(nil)
 	}
+	runner := d.Background
+	if runner == nil {
+		runner = background.New(log)
+	}
 	return &Server{
-		store:     d.Store,
-		sessions:  d.Sessions,
-		limiter:   d.Limiter,
-		log:       log,
-		render:    renderer,
-		graph:     d.Graph,
-		apiStatus: newOrgStatus(),
-		catalog:   catalog,
-		summaries: newSummaryCache(),
+		store:      d.Store,
+		sessions:   d.Sessions,
+		limiter:    d.Limiter,
+		log:        log,
+		render:     renderer,
+		graph:      d.Graph,
+		apiStatus:  newOrgStatus(),
+		catalog:    catalog,
+		summaries:  newSummaryCache(),
+		background: runner,
 	}, nil
 }
 
@@ -96,6 +104,14 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /users", s.requireAuth(s.handleUsers))
 	mux.HandleFunc("GET /user/{id}", s.requireAuth(s.handleUserDetail))
+	mux.HandleFunc("POST /user/{id}/update", s.requireAuth(s.csrf(s.handleUserUpdate)))
+	mux.HandleFunc("GET /user/{id}/license", s.requireAuth(s.handleLicenseGET))
+	mux.HandleFunc("POST /user/{id}/license", s.requireAuth(s.csrf(s.handleLicensePOST)))
+	mux.HandleFunc("GET /user/{id}/delete", s.requireAuth(s.handleDeleteUserGET))
+	mux.HandleFunc("POST /user/{id}/delete", s.requireAuth(s.csrf(s.handleDeleteUserPOST)))
+	mux.HandleFunc("GET /user/{id}/created", s.requireAuth(s.handleUserCreated))
+	mux.HandleFunc("GET /users/add", s.requireAuth(s.handleAddUserGET))
+	mux.HandleFunc("POST /users/add", s.requireAuth(s.csrf(s.handleAddUserPOST)))
 
 	mux.HandleFunc("/", s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)

@@ -1,0 +1,20 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">用户已创建</h1>
+</div>
+
+<div class="card form-narrow">
+    <div class="card-content">
+        <div class="alert alert-info">
+            请立即保存以下凭据并转交给用户：此页面只显示一次，刷新后将无法再次查看。
+            用户首次登录会被要求修改密码。
+        </div>
+        <p><strong>用户名：</strong><span class="code">{{.UPN}}</span></p>
+        <p><strong>临时密码：</strong><span class="code">{{.Password}}</span></p>
+        <div class="flex gap-2 mt-3">
+            <a href="/user/{{.UserID}}" class="btn btn-primary">前往用户详情</a>
+            <a href="/users?view=users" class="btn btn-outline">返回用户列表</a>
+        </div>
+    </div>
+</div>
+{{end}}
