@@ -9,10 +9,14 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/lcyan/office365-manager/assets"
 	"github.com/lcyan/office365-manager/internal/auth"
 	"github.com/lcyan/office365-manager/internal/config"
+	"github.com/lcyan/office365-manager/internal/graph"
+	"github.com/lcyan/office365-manager/internal/licenses"
 	"github.com/lcyan/office365-manager/internal/web"
 )
 
@@ -40,20 +44,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	sessions := web.NewSessionManager([]byte(secret), os.Getenv("COOKIE_SECURE") == "1")
+	catalog := loadCatalog(*configFile)
 
 	server, err := web.New(web.Deps{
 		Store:    store,
-		Sessions: sessions,
+		Sessions: web.NewSessionManager([]byte(secret), os.Getenv("COOKIE_SECURE") == "1"),
 		Limiter:  auth.NewLimiter(5, 30*time.Second),
 		Log:      logger,
+		Graph:    graph.New(logger),
+		Catalog:  catalog,
 	})
 	if err != nil {
 		logger.Error("初始化服务失败", "err", err)
 		os.Exit(1)
 	}
 
-	logger.Info("启动服务", "addr", *addr, "config", *configFile)
+	logger.Info("启动服务", "addr", *addr, "config", *configFile, "organizations", len(store.Orgs()))
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           server.Handler(),
@@ -63,6 +69,16 @@ func main() {
 		logger.Error("服务退出", "err", err)
 		os.Exit(1)
 	}
+}
+
+// loadCatalog 加载 SKU 映射：内嵌基准 + 配置目录下可选的覆盖文件
+// sku_product_mapping.json（便于不重建镜像即调整产品名）。
+func loadCatalog(configFile string) *licenses.Catalog {
+	external, err := os.ReadFile(filepath.Join(filepath.Dir(configFile), "sku_product_mapping.json"))
+	if err == nil {
+		return licenses.NewCatalog(external)
+	}
+	return licenses.NewCatalog(assets.SKUMapping)
 }
 
 // sessionSecret 返回会话签名密钥：优先 SESSION_SECRET；
